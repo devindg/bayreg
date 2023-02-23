@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "bayreg"
+version = "0.1.0"
+description = ""
+authors = ["devindg <devindg@outlook.com>"]
+readme = "README.md"
+packages = [{include = "bayes_reg"}]
+keywords = ["bayesian", "regression", "conjugate"]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.11"
+scipy = "^1.10.0"
+scikit-learn = "^1.2.1"
+numpy = "^1.23.5"
+pandas = "^1.5.3"
+numba = "^0.56.4"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
