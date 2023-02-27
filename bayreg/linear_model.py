@@ -485,43 +485,20 @@ class ConjugateBayesianLinearRegression:
         self.post_pred_dist = self.predict(self.predictors)
         return self.post_pred_dist
 
+    def posterior_summary(self, cred_int_level=0.05):
+        if self.posterior is None:
+            raise AttributeError("A posterior distribution has not been generated "
+                                 "because no model has been fit to data. The "
+                                 "posterior_summary() method is operational "
+                                 "only if fit() has been used.")
 
-class ModelSummary:
-    def __init__(self, model: ConjugateBayesianLinearRegression):
-        if not isinstance(model, ConjugateBayesianLinearRegression):
-            raise ValueError("The model object must be of type ConjugateBayesianLinearRegression.")
-        self.model = model
+        if not 0 < cred_int_level < 1:
+            raise ValueError("The credible interval level must be a value in (0, 1).")
 
-        if self.model.posterior is None:
-            raise AttributeError("No posterior distribution for the model's parameters was found. "
-                                 "The ModelSummary class is not viable. Make sure to use the "
-                                 "fit() method in ConjugateBayesianLinearRegression.")
-
-        if self.model.post_pred_dist is None:
-            raise AttributeError("No posterior predictive distribution was found. "
-                                 "The ModelSummary class is not viable. Make sure to use the "
-                                 "fit() and posterior_predictive_distribution() methods "
-                                 "in ConjugateBayesianLinearRegression.")
-
-    def waic(self):
-        return watanabe_akaike(response=self.model.response,
-                               post_pred_dist=self.model.post_pred_dist,
-                               post_err_var=self.model.posterior.post_err_var)
-
-    def mspe(self):
-        return mean_squared_prediction_error(response=self.model.response,
-                                             post_pred_dist=self.model.post_pred_dist,
-                                             post_err_var=self.model.posterior.post_err_var)
-
-    def r_sqr(self):
-        return r_squared(post_pred_dist=self.model.post_pred_dist,
-                         post_err_var=self.model.posterior.post_err_var)
-
-    def parameters(self, cred_int_level=0.05):
-        posterior = self.model.posterior
-        num_coeff = self.model.num_coeff
-        pred_names = self.model.predictors_names
-        lb, ub = 0.5 * cred_int_level, 0.5 * (1 - cred_int_level)
+        posterior = self.posterior
+        num_coeff = self.num_coeff
+        pred_names = self.predictors_names
+        lb, ub = 0.5 * cred_int_level, 1 - 0.5 * cred_int_level
 
         # Coefficients
         post_coeff = posterior.post_coeff
@@ -565,3 +542,35 @@ class ModelSummary:
         summary["Post.CredInt.UB[ErrorVariance]"] = post_err_var_ub
 
         return summary
+
+
+class ModelPerformance:
+    def __init__(self, model: ConjugateBayesianLinearRegression):
+        if not isinstance(model, ConjugateBayesianLinearRegression):
+            raise ValueError("The model object must be of type ConjugateBayesianLinearRegression.")
+        self.model = model
+
+        if self.model.posterior is None:
+            raise AttributeError("No posterior distribution for the model's parameters was found. "
+                                 "The ModelSummary class is not viable. Make sure to use the "
+                                 "fit() method in ConjugateBayesianLinearRegression.")
+
+        if self.model.post_pred_dist is None:
+            raise AttributeError("No posterior predictive distribution was found. "
+                                 "The ModelSummary class is not viable. Make sure to use the "
+                                 "fit() and posterior_predictive_distribution() methods "
+                                 "in ConjugateBayesianLinearRegression.")
+
+    def waic(self):
+        return watanabe_akaike(response=self.model.response,
+                               post_pred_dist=self.model.post_pred_dist,
+                               post_err_var=self.model.posterior.post_err_var)
+
+    def mspe(self):
+        return mean_squared_prediction_error(response=self.model.response,
+                                             post_pred_dist=self.model.post_pred_dist,
+                                             post_err_var=self.model.posterior.post_err_var)
+
+    def r_sqr(self):
+        return r_squared(post_pred_dist=self.model.post_pred_dist,
+                         post_err_var=self.model.posterior.post_err_var)
