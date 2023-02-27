@@ -35,40 +35,45 @@ def _set_numba_seed(value):
 
 class ConjugateBayesianLinearRegression:
     """
-    A Bayesian statistical procedure for linear regression. The model is:
+    Conjugate Bayesian linear regression procedure. The model is:
 
         Estimating equation:
-        y = X*beta + epsilon
-        epsilon | X, beta ~ N(0, sigma^2*I)
+        y = X.beta + error
+        error | X, beta ~ N(0, sigma^2*I)
 
         Likelihood:
-        y | X, beta, sigma^2 ~ N(X*beta, sigma^2*I)
+        y | X, beta, sigma^2 ~ N(X.beta, sigma^2*I_n)
 
         Prior:
-        beta | sigma^2 ~ N(psi, sigma^2*LAMBDA)
-        sigma^2 ~ IG(alpha, tau)
-        => (beta, sigma^2) ~ N-IG(psi, LAMBDA, alpha, tau)
+        beta ~ N(prior_beta_mean, prior_beta_cov)
+        sigma^2 ~ Inverse-Gamma(prior_err_var_shape, prior_err_var_scale)
+
+        Posterior:
+        beta, sigma^2 | X, y ~ N-IG(post_beta_mean, ninvg_post_beta_cov, post_err_var_shape, post_err_var_scale)
+        beta | sigma^2, X, y ~ N(post_beta_mean, sigma^2 * ninvg_post_beta_cov)
+        sigma^2 | X, y ~ N-IG(post_err_var_shape, post_err_var_scale)
+        beta | X, y ~ Multivariate-t(df = 2 * post_err_var_shape,
+                                     mean = post_coeff_mean,
+                                     cov = post_err_var_scale / post_err_var_shape * ninvg_post_beta_cov)
 
     where
 
-        - y is an n x 1 outcome vector;
+        - y is an n x 1 response vector;
         - X is an n x k design matrix, with k being the number of predictors;
-        - epsilon is an n x 1 model error vector;
-        - beta is a k x 1 vector of parameters;
-        - sigma^2 is a scalar representing the homoskedastic variance of y;
-        - I is the n x n identity matrix;
-        - psi is a k x 1 vector representing a prior about the mean of beta;
-        - LAMBDA is a k x k matrix representing a prior about the variance of beta;
-        - alpha is a scalar representing a prior about the shape of sigma^2's distribution;
-        - tau is a scalar representing a prior about the scale of sigma^2's distribution;
+        - error is an unobserved n x 1 vector of perturbations;
+        - beta is a k x 1 vector of coefficients;
+        - sigma^2 is a scalar representing the homoskedastic variance of error | X, beta;
+        - I_n is the n x n identity matrix;
+        - prior_beta_mean is a k x 1 vector representing a prior about the mean of beta;
+        - prior_beta_cov is a k x k matrix representing a prior about the covariance of beta;
+        - prior_err_var_shape is a scalar representing a prior about the shape of sigma^2's distribution;
+        - prior_err_var_scale is a scalar representing a prior about the scale of sigma^2's distribution;
 
         - N(a,b) represents a normally distributed random variable with mean a and variance b;
         - IG(a,b) represents an inverse-gamma distributed random variable with shape a and scale b;
         - N-IG(a,b,c,d) represents a normal inverse-gamma distributed multivariate random variable
             with parameters a, b, c, and d
 
-    The N-IG prior for the parameters beta and sigma^2 is a conjugate prior.
-    Consequently, the posterior distribution for beta and sigma^2 is also N-IG.
     """
 
     def __init__(self,
@@ -135,7 +140,7 @@ class ConjugateBayesianLinearRegression:
                 raise TypeError('The response array provided is a Pandas Series/DataFrame, but the predictors '
                                 'array is not. Object types must match.')
 
-            # -- get predictor names if a Pandas object and sort index
+            # -- get predictor names if a Pandas object
             if isinstance(predictors, (pd.Series, pd.DataFrame)):
                 if not (predictors.index == response.index).all():
                     raise ValueError('The response and predictors indexes must match.')
@@ -149,7 +154,7 @@ class ConjugateBayesianLinearRegression:
 
         # -- dimension and null/inf checks
         if pred.ndim not in (1, 2):
-            raise ValueError('The predictors array must have dimension 1 or 2. Dimension is 0.')
+            raise ValueError('The predictors array must have dimension 1 or 2.')
         elif pred.ndim == 1:
             pred = pred.reshape(-1, 1)
         else:
@@ -270,7 +275,7 @@ class ConjugateBayesianLinearRegression:
             if not is_symmetric(prior_coeff_cov):
                 raise ValueError('prior_coeff_cov must be a symmetric matrix.')
 
-            coeff_prec_prior = mat_inv(prior_coeff_cov)
+            prior_coeff_prec = mat_inv(prior_coeff_cov)
         else:
             '''
             If predictors are specified without a precision prior, Zellner's g-prior will
@@ -288,8 +293,8 @@ class ConjugateBayesianLinearRegression:
                 zellner_prior_obs = 1e-6
 
             w = 0.5
-            coeff_prec_prior = zellner_prior_obs / n * (w * XtX + (1 - w) * np.diag(np.diag(XtX)))
-            prior_coeff_cov = mat_inv(coeff_prec_prior)
+            prior_coeff_prec = zellner_prior_obs / n * (w * XtX + (1 - w) * np.diag(np.diag(XtX)))
+            prior_coeff_cov = mat_inv(prior_coeff_prec)
 
         self.prior = Prior(prior_coeff_mean=prior_coeff_mean,
                            prior_coeff_cov=prior_coeff_cov,
@@ -303,14 +308,14 @@ class ConjugateBayesianLinearRegression:
         # Note: storing the normal-inverse-gamma precision and covariance matrices
         # could cause memory problems if the coefficient vector has high dimension.
         # May want to reconsider temporary storage of these matrices.
-        ninvg_coeff_prec_post = Vt.T @ (S ** 2 + Vt @ coeff_prec_prior @ Vt.T) @ Vt
-        ninvg_post_coeff_cov = Vt.T @ mat_inv(S ** 2 + Vt @ coeff_prec_prior @ Vt.T) @ Vt
-        post_coeff_mean = ninvg_post_coeff_cov @ (x.T @ y + coeff_prec_prior @ prior_coeff_mean)
+        ninvg_post_coeff_prec = Vt.T @ (S ** 2 + Vt @ prior_coeff_prec @ Vt.T) @ Vt
+        ninvg_post_coeff_cov = Vt.T @ mat_inv(S ** 2 + Vt @ prior_coeff_prec @ Vt.T) @ Vt
+        post_coeff_mean = ninvg_post_coeff_cov @ (x.T @ y + prior_coeff_prec @ prior_coeff_mean)
         post_err_var_shape = prior_err_var_shape + 0.5 * n
         post_err_var_scale = (prior_err_var_scale +
                               0.5 * (y.T @ y
-                                     + prior_coeff_mean.T @ coeff_prec_prior @ prior_coeff_mean
-                                     - post_coeff_mean.T @ ninvg_coeff_prec_post @ post_coeff_mean))[0][0]
+                                     + prior_coeff_mean.T @ prior_coeff_prec @ prior_coeff_mean
+                                     - post_coeff_mean.T @ ninvg_post_coeff_prec @ post_coeff_mean))[0][0]
 
         # Marginal posterior distribution for variance parameter
         post_err_var = invgamma.rvs(post_err_var_shape,
@@ -346,18 +351,15 @@ class ConjugateBayesianLinearRegression:
                                    post_err_var_scale=post_err_var_scale,
                                    post_err_var=post_err_var)
 
-        # Posterior predictive distribution
-        self.post_pred_dist = self.predict(self.predictors)
-
         # # Computations without SVD
-        # ninvg_coeff_prec_post = x.T @ x + coeff_prec_prior
-        # ninvg_post_coeff_cov = mat_inv(ninvg_coeff_prec_post)
-        # post_coeff_mean = np.linalg.solve(ninvg_coeff_prec_post, x.T @ y + coeff_prec_prior @ prior_coeff_mean)
+        # ninvg_post_coeff_prec = x.T @ x + prior_coeff_prec
+        # ninvg_post_coeff_cov = mat_inv(ninvg_post_coeff_prec)
+        # post_coeff_mean = np.linalg.solve(ninvg_post_coeff_prec, x.T @ y + prior_coeff_prec @ prior_coeff_mean)
         # post_err_var_shape = prior_err_var_shape + 0.5 * n
         # post_err_var_scale = (prior_err_var_scale +
         #                       0.5 * (y.T @ y
-        #                              + prior_coeff_mean.T @ coeff_prec_prior @ prior_coeff_mean
-        #                              - post_coeff_mean.T @ ninvg_coeff_prec_post @ post_coeff_mean))[0][0]
+        #                              + prior_coeff_mean.T @ prior_coeff_prec @ prior_coeff_mean
+        #                              - post_coeff_mean.T @ ninvg_post_coeff_prec @ post_coeff_mean))[0][0]
         #
         # # Marginal posterior distribution for variance parameter
         # post_err_var = invgamma.rvs(post_err_var_shape,
@@ -381,21 +383,73 @@ class ConjugateBayesianLinearRegression:
         :param mean_only: 
         :return:
         """
-        if predictors.shape[1] != self.num_coeff:
-            raise ValueError("The number of columns in predictors must match the "
-                             "number of columns in the predictor/design matrix "
-                             "passed to the ConjugateBayesianLinearRegression class. "
-                             "Ensure that the number and order of predictors matches "
-                             "the number and order of predictors in the design matrix "
-                             "used for model fitting.")
+
+        # -- check if object type is valid
+        if not isinstance(predictors, (pd.Series, pd.DataFrame, np.ndarray)):
+            raise TypeError("The predictors array must be a NumPy array, Pandas Series, "
+                            "or Pandas DataFrame.")
+        else:
+            x = predictors.copy()
+            # Check and prepare predictor data
+            # -- data types match across instantiated predictors and predictors
+            if not isinstance(predictors, type(self.predictors)):
+                raise TypeError('Object type for predictors does not match the predictors '
+                                'object type instantiated with ConjugateBayesianLinearRegression.')
+            else:
+                # -- if Pandas type, grab index and column names
+                if isinstance(predictors, (pd.Series, pd.DataFrame)):
+                    if not isinstance(predictors.index, type(self.response_index)):
+                        raise TypeError('Index type for predictors does not match the predictors '
+                                        'index type instantiated with ConjugateBayesianLinearRegression.')
+
+                    if isinstance(predictors, pd.Series):
+                        predictors_names = [predictors.name]
+                    else:
+                        predictors_names = predictors.columns.values.tolist()
+
+                    if len(predictors_names) != self.num_coeff:
+                        raise ValueError(
+                            f'The number of predictors used for historical estimation {self.num_coeff} '
+                            f'does not match the number of predictors specified for forecasting '
+                            f'{len(predictors_names)}. The same set of predictors must be used.')
+                    else:
+                        if not all(self.predictors_names[i] == predictors_names[i]
+                                   for i in range(self.num_coeff)):
+                            raise ValueError('The order and names of the columns in predictors must match '
+                                             'the order and names in the predictors array instantiated '
+                                             'with the ConjugateBayesianLinearRegression class.')
+
+                    x = x.to_numpy()
+
+                # -- dimensions
+                if x.ndim not in (1, 2):
+                    raise ValueError('The predictors array must have dimension 1 or 2.')
+                elif x.ndim == 1:
+                    x = x.reshape(-1, 1)
+                else:
+                    if 1 in x.shape:
+                        x = x.reshape(-1, 1)
+
+                if np.isnan(x).any():
+                    raise ValueError('The predictors array cannot have null values.')
+                if np.isinf(x).any():
+                    raise ValueError('The predictors array cannot have Inf and/or -Inf values.')
+
+                # Final sanity checks
+                if x.shape[1] != self.num_coeff:
+                    raise ValueError("The number of columns in predictors must match the "
+                                     "number of columns in the predictor/design matrix "
+                                     "instantiated with the ConjugateBayesianLinearRegression class. "
+                                     "Ensure that the number and order of predictors matches "
+                                     "the number and order of predictors in the design matrix "
+                                     "used for model fitting.")
 
         if self.posterior is None:
             raise AttributeError("A posterior distribution has not been generated "
                                  "because no model has been fit to data. The predict() "
-                                 "function is operational only if fit() has been used.")
+                                 "method is operational only if fit() has been used.")
 
         n = predictors.shape[0]
-        x = predictors
 
         # # Closed-form posterior predictive distribution.
         # # Sampling from this distribution is computationally
@@ -412,7 +466,7 @@ class ConjugateBayesianLinearRegression:
         #                                 shape=V).rvs(S)
 
         posterior_prediction = np.empty((self.posterior.num_post_samp, n))
-        
+
         if not mean_only:
             for s in range(self.posterior.num_post_samp):
                 posterior_prediction[s, :] = vec_norm(x @ self.posterior.post_coeff[s],
@@ -422,12 +476,32 @@ class ConjugateBayesianLinearRegression:
 
         return posterior_prediction
 
+    def posterior_predictive_distribution(self):
+        if self.posterior is None:
+            raise AttributeError("A posterior distribution has not been generated "
+                                 "because no model has been fit to data. The "
+                                 "posterior_predictive_distribution() method is operational "
+                                 "only if fit() has been used.")
+        self.post_pred_dist = self.predict(self.predictors)
+        return self.post_pred_dist
+
 
 class ModelSummary:
     def __init__(self, model: ConjugateBayesianLinearRegression):
         if not isinstance(model, ConjugateBayesianLinearRegression):
             raise ValueError("The model object must be of type ConjugateBayesianLinearRegression.")
         self.model = model
+
+        if self.model.posterior is None:
+            raise AttributeError("No posterior distribution for the model's parameters was found. "
+                                 "The ModelSummary class is not viable. Make sure to use the "
+                                 "fit() method in ConjugateBayesianLinearRegression.")
+
+        if self.model.post_pred_dist is None:
+            raise AttributeError("No posterior predictive distribution was found. "
+                                 "The ModelSummary class is not viable. Make sure to use the "
+                                 "fit() and posterior_predictive_distribution() methods "
+                                 "in ConjugateBayesianLinearRegression.")
 
     def waic(self):
         return watanabe_akaike(response=self.model.response,
