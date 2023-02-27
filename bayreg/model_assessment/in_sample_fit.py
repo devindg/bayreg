@@ -19,7 +19,7 @@ def pointwise_loglike_norm(response, predicted_response, error_variance):
                    + (response.T - predicted_response) ** 2 / error_variance)
 
 
-def watanabe_akaike(response, post_pred_dist, err_var_post):
+def watanabe_akaike(response, post_pred_dist, post_err_var):
     """
     Source: Understanding predictive information criteria for Bayesian models
             Gelman, Hwang, and Vehtari (2013)
@@ -72,7 +72,7 @@ def watanabe_akaike(response, post_pred_dist, err_var_post):
     """
     log_prob = pointwise_loglike_norm(response,
                                       post_pred_dist,
-                                      err_var_post)
+                                      post_err_var)
 
     log_ppd = np.sum(logsumexp(log_prob, axis=0, b=1 / post_pred_dist.shape[0]))
     eff_num_params = np.sum(np.var(log_prob, axis=0, ddof=1))
@@ -81,17 +81,17 @@ def watanabe_akaike(response, post_pred_dist, err_var_post):
     return WAIC(waic=waic, eff_num_params=eff_num_params)
 
 
-def mean_squared_prediction_error(response, post_pred_dist, err_var_post):
+def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
     prediction_mean = np.mean(post_pred_dist, axis=0).reshape(1, -1)
     prediction_variance = np.mean((post_pred_dist - prediction_mean) ** 2, axis=1).reshape(-1, 1)
     prediction_bias = np.mean(response.T - prediction_mean)
-    mspe = prediction_variance + prediction_bias ** 2 + err_var_post
+    mspe = prediction_variance + prediction_bias ** 2 + post_err_var
 
     return MSPE(mspe, prediction_bias, prediction_variance)
 
 
-def r_squared(post_pred_dist, err_var_post):
+def r_squared(post_pred_dist, post_err_var):
     predicted_variance = np.var(post_pred_dist, axis=1, ddof=1).reshape(-1, 1)
-    r2 = predicted_variance / (predicted_variance + err_var_post)
+    r2 = predicted_variance / (predicted_variance + post_err_var)
 
     return r2

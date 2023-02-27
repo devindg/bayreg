@@ -13,27 +13,27 @@ class Outliers(NamedTuple):
     num_eff_params: float
 
 
-def get_projection_matrix_diagonal(predictors, coeff_prec_prior=None):
+def get_projection_matrix_diagonal(predictors, prior_coeff_prec=None):
     n, k = predictors.shape
     x = predictors
 
     U, s, Vt = svd(x, full_matrices=False)
     S = np.diag(s)
     proj_mat_diag = np.empty((n, 1))
-    if coeff_prec_prior is None:
+    if prior_coeff_prec is None:
         W = None
         for i in range(n):
             proj_mat_diag[i] = U[i, :] @ U.T[:, i]
     else:
         US = U @ S
-        W = mat_inv(S**2 + Vt @ coeff_prec_prior @ Vt.T)
+        W = mat_inv(S**2 + Vt @ prior_coeff_prec @ Vt.T)
         for i in range(n):
             proj_mat_diag[i] = US[i, :] @ W @ US.T[:, i]
 
     return proj_mat_diag, U, S, Vt, W
 
 
-def studentized_residuals(response, predictors, coeff_prec_prior=None, coeff_mean_prior=None):
+def studentized_residuals(response, predictors, prior_coeff_prec=None, prior_coeff_mean=None):
     y = response.copy()
     x = predictors.copy()
 
@@ -62,14 +62,14 @@ def studentized_residuals(response, predictors, coeff_prec_prior=None, coeff_mea
         raise ValueError("The response and predictors arrays do not have the same number "
                          "of observations.")
 
-    if coeff_prec_prior is not None and coeff_mean_prior is None:
-        raise ValueError("coeff_mean_prior must be provided if coeff_prec_prior is provided.")
+    if prior_coeff_prec is not None and prior_coeff_mean is None:
+        raise ValueError("prior_coeff_mean must be provided if prior_coeff_prec is provided.")
 
-    if coeff_prec_prior is None and coeff_mean_prior is not None:
-        raise ValueError("coeff_prec_prior must be provided if coeff_mean_prior is provided.")
+    if prior_coeff_prec is None and prior_coeff_mean is not None:
+        raise ValueError("prior_coeff_prec must be provided if prior_coeff_mean is provided.")
 
     if k >= n:
-        if coeff_mean_prior is None:
+        if prior_coeff_mean is None:
             raise ValueError("The number of predictors exceeds the number of observations. "
                              "Ordinary least squares is not feasible in this case. Provide "
                              "mean and precision priors for the predictor coefficients "
@@ -78,13 +78,13 @@ def studentized_residuals(response, predictors, coeff_prec_prior=None, coeff_mea
                              "be necessary to avoid non-positive degrees of freedom for the "
                              "Student-t distribution associated with externalized residuals.")
 
-    h, U, S, Vt, W = get_projection_matrix_diagonal(predictors=x, coeff_prec_prior=coeff_prec_prior)
+    h, U, S, Vt, W = get_projection_matrix_diagonal(predictors=x, prior_coeff_prec=prior_coeff_prec)
     p = sum(h)
 
-    if coeff_mean_prior is None:
+    if prior_coeff_mean is None:
         b = Vt.T @ np.diag(np.diag(S) ** (-1)) @ U.T @ y
     else:
-        b = (Vt.T @ W @ Vt) @ (x.T @ y + coeff_prec_prior @ coeff_mean_prior)
+        b = (Vt.T @ W @ Vt) @ (x.T @ y + prior_coeff_prec @ prior_coeff_mean)
 
     response_pred = x @ b
     resid = y - response_pred
