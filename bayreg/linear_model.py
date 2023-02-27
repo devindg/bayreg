@@ -12,19 +12,19 @@ from typing import Union, NamedTuple
 
 class Posterior(NamedTuple):
     num_post_samp: int
-    coeff_mean_post: np.ndarray
-    coeff_cov_post: np.ndarray
-    coeff_post: np.ndarray
-    err_var_shape_post: np.ndarray
-    err_var_scale_post: np.ndarray
-    err_var_post: np.ndarray
+    post_coeff_mean: np.ndarray
+    post_coeff_cov: np.ndarray
+    post_coeff: np.ndarray
+    post_err_var_shape: np.ndarray
+    post_err_var_scale: np.ndarray
+    post_err_var: np.ndarray
 
 
 class Prior(NamedTuple):
-    coeff_mean_prior: np.ndarray
-    coeff_cov_prior: np.ndarray
-    err_var_shape_prior: np.ndarray
-    err_var_scale_prior: np.ndarray
+    prior_coeff_mean: np.ndarray
+    prior_coeff_cov: np.ndarray
+    prior_err_var_shape: np.ndarray
+    prior_err_var_scale: np.ndarray
     zellner_prior_obs: float
 
 
@@ -215,18 +215,18 @@ class ConjugateBayesianLinearRegression:
 
     def fit(self,
             num_post_samp=1000,
-            coeff_mean_prior=None,
-            coeff_cov_prior=None,
-            err_var_shape_prior=None,
-            err_var_scale_prior=None,
+            prior_coeff_mean=None,
+            prior_coeff_cov=None,
+            prior_err_var_shape=None,
+            prior_err_var_scale=None,
             zellner_prior_obs=None):
         """
 
         :param num_post_samp:
-        :param coeff_mean_prior:
-        :param coeff_cov_prior:
-        :param err_var_shape_prior:
-        :param err_var_scale_prior:
+        :param prior_coeff_mean:
+        :param prior_coeff_cov:
+        :param prior_err_var_shape:
+        :param prior_err_var_scale:
         :param zellner_prior_obs:
         :return:
         """
@@ -236,41 +236,41 @@ class ConjugateBayesianLinearRegression:
         XtX = Vt.T @ (S ** 2) @ Vt
 
         # Check shape prior for error variance
-        if err_var_shape_prior is not None:
-            if not err_var_shape_prior > 0:
-                raise ValueError('err_var_shape_prior must be strictly positive.')
+        if prior_err_var_shape is not None:
+            if not prior_err_var_shape > 0:
+                raise ValueError('prior_err_var_shape must be strictly positive.')
         else:
-            err_var_shape_prior = 1e-6
+            prior_err_var_shape = 1e-6
 
         # Check scale prior for error variance
-        if err_var_scale_prior is not None:
-            if not err_var_scale_prior > 0:
-                raise ValueError('err_var_scale_prior must be strictly positive.')
+        if prior_err_var_scale is not None:
+            if not prior_err_var_scale > 0:
+                raise ValueError('prior_err_var_scale must be strictly positive.')
         else:
-            err_var_scale_prior = 1e-6
+            prior_err_var_scale = 1e-6
 
         # Check prior mean for regression coefficients
-        if coeff_mean_prior is not None:
-            if not coeff_mean_prior.shape == (self.num_coeff, 1):
-                raise ValueError(f'coeff_mean_prior must have shape ({self.num_coeff}, 1).')
-            if np.any(np.isnan(coeff_mean_prior)):
-                raise ValueError('coeff_mean_prior cannot have NaN values.')
-            if np.any(np.isinf(coeff_mean_prior)):
-                raise ValueError('coeff_mean_prior cannot have Inf and/or -Inf values.')
+        if prior_coeff_mean is not None:
+            if not prior_coeff_mean.shape == (self.num_coeff, 1):
+                raise ValueError(f'prior_coeff_mean must have shape ({self.num_coeff}, 1).')
+            if np.any(np.isnan(prior_coeff_mean)):
+                raise ValueError('prior_coeff_mean cannot have NaN values.')
+            if np.any(np.isinf(prior_coeff_mean)):
+                raise ValueError('prior_coeff_mean cannot have Inf and/or -Inf values.')
         else:
-            coeff_mean_prior = np.zeros((self.num_coeff, 1))
+            prior_coeff_mean = np.zeros((self.num_coeff, 1))
 
         # Check prior covariance matrix for regression coefficients
-        if coeff_cov_prior is not None:
-            if not coeff_cov_prior.shape == (self.num_coeff, self.num_coeff):
-                raise ValueError(f'coeff_cov_prior must have shape ({self.num_coeff}, '
+        if prior_coeff_cov is not None:
+            if not prior_coeff_cov.shape == (self.num_coeff, self.num_coeff):
+                raise ValueError(f'prior_coeff_cov must have shape ({self.num_coeff}, '
                                  f'{self.num_coeff}).')
-            if not is_positive_definite(coeff_cov_prior):
-                raise ValueError('coeff_cov_prior must be a positive definite matrix.')
-            if not is_symmetric(coeff_cov_prior):
-                raise ValueError('coeff_cov_prior must be a symmetric matrix.')
+            if not is_positive_definite(prior_coeff_cov):
+                raise ValueError('prior_coeff_cov must be a positive definite matrix.')
+            if not is_symmetric(prior_coeff_cov):
+                raise ValueError('prior_coeff_cov must be a symmetric matrix.')
 
-            coeff_prec_prior = mat_inv(coeff_cov_prior)
+            coeff_prec_prior = mat_inv(prior_coeff_cov)
         else:
             '''
             If predictors are specified without a precision prior, Zellner's g-prior will
@@ -289,12 +289,12 @@ class ConjugateBayesianLinearRegression:
 
             w = 0.5
             coeff_prec_prior = zellner_prior_obs / n * (w * XtX + (1 - w) * np.diag(np.diag(XtX)))
-            coeff_cov_prior = mat_inv(coeff_prec_prior)
+            prior_coeff_cov = mat_inv(coeff_prec_prior)
 
-        self.prior = Prior(coeff_mean_prior=coeff_mean_prior,
-                           coeff_cov_prior=coeff_cov_prior,
-                           err_var_shape_prior=err_var_shape_prior,
-                           err_var_scale_prior=err_var_scale_prior,
+        self.prior = Prior(prior_coeff_mean=prior_coeff_mean,
+                           prior_coeff_cov=prior_coeff_cov,
+                           prior_err_var_shape=prior_err_var_shape,
+                           prior_err_var_scale=prior_err_var_scale,
                            zellner_prior_obs=zellner_prior_obs)
 
         # Posterior values for coefficient mean, coefficient covariance matrix,
@@ -303,80 +303,82 @@ class ConjugateBayesianLinearRegression:
         # Note: storing the normal-inverse-gamma precision and covariance matrices
         # could cause memory problems if the coefficient vector has high dimension.
         # May want to reconsider temporary storage of these matrices.
-        ninvg_coeff_prec_post = Vt.T @ (S**2 + Vt @ coeff_prec_prior @ Vt.T) @ Vt
-        ninvg_coeff_cov_post = Vt.T @ mat_inv(S**2 + Vt @ coeff_prec_prior @ Vt.T) @ Vt
-        coeff_mean_post = ninvg_coeff_cov_post @ (x.T @ y + coeff_prec_prior @ coeff_mean_prior)
-        err_var_shape_post = err_var_shape_prior + 0.5 * n
-        err_var_scale_post = (err_var_scale_prior +
+        ninvg_coeff_prec_post = Vt.T @ (S ** 2 + Vt @ coeff_prec_prior @ Vt.T) @ Vt
+        ninvg_post_coeff_cov = Vt.T @ mat_inv(S ** 2 + Vt @ coeff_prec_prior @ Vt.T) @ Vt
+        post_coeff_mean = ninvg_post_coeff_cov @ (x.T @ y + coeff_prec_prior @ prior_coeff_mean)
+        post_err_var_shape = prior_err_var_shape + 0.5 * n
+        post_err_var_scale = (prior_err_var_scale +
                               0.5 * (y.T @ y
-                                     + coeff_mean_prior.T @ coeff_prec_prior @ coeff_mean_prior
-                                     - coeff_mean_post.T @ ninvg_coeff_prec_post @ coeff_mean_post))[0][0]
+                                     + prior_coeff_mean.T @ coeff_prec_prior @ prior_coeff_mean
+                                     - post_coeff_mean.T @ ninvg_coeff_prec_post @ post_coeff_mean))[0][0]
 
         # Marginal posterior distribution for variance parameter
-        err_var_post = invgamma.rvs(err_var_shape_post,
-                                    scale=err_var_scale_post,
+        post_err_var = invgamma.rvs(post_err_var_shape,
+                                    scale=post_err_var_scale,
                                     size=(num_post_samp, 1))
 
         # Marginal posterior distribution for coefficients
-        coeff_cov_post = err_var_scale_post / err_var_shape_post * (Vt @ ninvg_coeff_cov_post @ Vt.T)
+        post_coeff_cov = post_err_var_scale / post_err_var_shape * (Vt @ ninvg_post_coeff_cov @ Vt.T)
 
         # Check if the covariance matrix corresponding to the coefficients' marginal
         # posterior distribution is ill-conditioned.
-        if not is_positive_definite(coeff_cov_post):
+        if not is_positive_definite(post_coeff_cov):
             raise ValueError("The covariance matrix corresponding to the coefficients' "
                              "marginal posterior distribution (multivariate Student-t) "
                              "is not positive definite. Try scaling the predictors, the "
                              "response, or both to eliminate the possibility of an "
                              "ill-conditioned matrix.")
 
-        coeff_post = multivariate_t(df=2 * err_var_shape_post,
-                                    loc=Vt @ coeff_mean_post.squeeze(),
-                                    shape=coeff_cov_post,
+        post_coeff = multivariate_t(df=2 * post_err_var_shape,
+                                    loc=Vt @ post_coeff_mean.squeeze(),
+                                    shape=post_coeff_cov,
                                     allow_singular=True).rvs(num_post_samp)
 
         # Back-transform parameters from SVD to original scale
-        coeff_cov_post = Vt.T @ coeff_cov_post @ Vt
-        coeff_post = (Vt.T @ coeff_post.T).T
+        post_coeff_cov = Vt.T @ post_coeff_cov @ Vt
+        post_coeff = (Vt.T @ post_coeff.T).T
 
         self.posterior = Posterior(num_post_samp=num_post_samp,
-                                   coeff_cov_post=coeff_cov_post,
-                                   coeff_mean_post=coeff_mean_post,
-                                   coeff_post=coeff_post,
-                                   err_var_shape_post=err_var_shape_post,
-                                   err_var_scale_post=err_var_scale_post,
-                                   err_var_post=err_var_post)
+                                   post_coeff_cov=post_coeff_cov,
+                                   post_coeff_mean=post_coeff_mean,
+                                   post_coeff=post_coeff,
+                                   post_err_var_shape=post_err_var_shape,
+                                   post_err_var_scale=post_err_var_scale,
+                                   post_err_var=post_err_var)
 
+        # Posterior predictive distribution
         self.post_pred_dist = self.predict(self.predictors)
 
         # # Computations without SVD
         # ninvg_coeff_prec_post = x.T @ x + coeff_prec_prior
-        # ninvg_coeff_cov_post = mat_inv(ninvg_coeff_prec_post)
-        # coeff_mean_post = np.linalg.solve(ninvg_coeff_prec_post, x.T @ y + coeff_prec_prior @ coeff_mean_prior)
-        # err_var_shape_post = err_var_shape_prior + 0.5 * n
-        # err_var_scale_post = (err_var_scale_prior +
+        # ninvg_post_coeff_cov = mat_inv(ninvg_coeff_prec_post)
+        # post_coeff_mean = np.linalg.solve(ninvg_coeff_prec_post, x.T @ y + coeff_prec_prior @ prior_coeff_mean)
+        # post_err_var_shape = prior_err_var_shape + 0.5 * n
+        # post_err_var_scale = (prior_err_var_scale +
         #                       0.5 * (y.T @ y
-        #                              + coeff_mean_prior.T @ coeff_prec_prior @ coeff_mean_prior
-        #                              - coeff_mean_post.T @ ninvg_coeff_prec_post @ coeff_mean_post))[0][0]
+        #                              + prior_coeff_mean.T @ coeff_prec_prior @ prior_coeff_mean
+        #                              - post_coeff_mean.T @ ninvg_coeff_prec_post @ post_coeff_mean))[0][0]
         #
         # # Marginal posterior distribution for variance parameter
-        # err_var_post = invgamma.rvs(err_var_shape_post,
-        #                             scale=err_var_scale_post,
+        # post_err_var = invgamma.rvs(post_err_var_shape,
+        #                             scale=post_err_var_scale,
         #                             size=(num_post_samp, 1))
         #
         # # Marginal posterior distribution for coefficients
-        # coeff_cov_post = err_var_scale_post / err_var_shape_post * ninvg_coeff_cov_post
+        # post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
 
-        # coeff_post = multivariate_t(df=2 * err_var_shape_post,
-        #                             loc=coeff_mean_post.squeeze(),
-        #                             shape=coeff_cov_post,
+        # post_coeff = multivariate_t(df=2 * post_err_var_shape,
+        #                             loc=post_coeff_mean.squeeze(),
+        #                             shape=post_coeff_cov,
         #                             allow_singular=True).rvs(num_post_samp)
 
         return self.posterior
 
-    def predict(self, predictors):
+    def predict(self, predictors, mean_only=False):
         """
 
         :param predictors:
+        :param mean_only: 
         :return:
         """
         if predictors.shape[1] != self.num_coeff:
@@ -394,15 +396,14 @@ class ConjugateBayesianLinearRegression:
 
         n = predictors.shape[0]
         x = predictors
-        num_post_samp = self.posterior.num_post_samp
 
         # # Closed-form posterior predictive distribution.
         # # Sampling from this distribution is computationally
         # # expensive due to the n x n matrix V.
-        # beta_mean = self.posterior.coeff_mean_post
-        # alpha = self.posterior.err_var_shape_post
-        # tau = self.posterior.err_var_scale_post
-        # beta_cov = self.posterior.coeff_cov_post
+        # beta_mean = self.posterior.post_coeff_mean
+        # alpha = self.posterior.post_err_var_shape
+        # tau = self.posterior.post_err_var_scale
+        # beta_cov = self.posterior.post_coeff_cov
         #
         # V = tau / alpha * (np.eye(n) + x @ beta_cov @ x.T)
         # M = x @ beta_mean
@@ -410,14 +411,17 @@ class ConjugateBayesianLinearRegression:
         #                                 loc=M.squeeze(),
         #                                 shape=V).rvs(S)
 
-        beta = self.posterior.coeff_post
-        err_var = self.posterior.err_var_post
-        post_pred_dist = np.empty((num_post_samp, n))
-        for s in range(num_post_samp):
-            post_pred_dist[s, :] = vec_norm(x @ beta[s],
-                                            np.sqrt(err_var[s]))
+        posterior_prediction = np.empty((self.posterior.num_post_samp, n))
+        
+        if not mean_only:
+            for s in range(self.posterior.num_post_samp):
+                posterior_prediction[s, :] = vec_norm(x @ self.posterior.post_coeff[s],
+                                                      np.sqrt(self.posterior.post_err_var[s]))
+        else:
+            posterior_prediction = x @ self.posterior.post_coeff_mean
 
-        return post_pred_dist
+        return posterior_prediction
+
 
 class ModelSummary:
     def __init__(self, model: ConjugateBayesianLinearRegression):
@@ -428,16 +432,16 @@ class ModelSummary:
     def waic(self):
         return watanabe_akaike(response=self.model.response,
                                post_pred_dist=self.model.post_pred_dist,
-                               err_var_post=self.model.posterior.err_var_post)
+                               post_err_var=self.model.posterior.post_err_var)
 
     def mspe(self):
         return mean_squared_prediction_error(response=self.model.response,
                                              post_pred_dist=self.model.post_pred_dist,
-                                             err_var_post=self.model.posterior.err_var_post)
+                                             post_err_var=self.model.posterior.post_err_var)
 
     def r_sqr(self):
         return r_squared(post_pred_dist=self.model.post_pred_dist,
-                         err_var_post=self.model.posterior.err_var_post)
+                         post_err_var=self.model.posterior.post_err_var)
 
     def parameters(self, cred_int_level=0.05):
         posterior = self.model.posterior
@@ -446,44 +450,44 @@ class ModelSummary:
         lb, ub = 0.5 * cred_int_level, 0.5 * (1 - cred_int_level)
 
         # Coefficients
-        coeff_post = posterior.coeff_post
-        coeff_mean_post = posterior.coeff_mean_post.squeeze()
-        coeff_std_post = np.sqrt(np.diag(posterior.coeff_cov_post))
-        coeff_lb_post = np.quantile(coeff_post, lb, axis=0)
-        coeff_ub_post = np.quantile(coeff_post, ub, axis=0)
-        coeff_prob_pos_post = np.sum((coeff_post > 0) * 1, axis=0) / posterior.num_post_samp
+        post_coeff = posterior.post_coeff
+        post_coeff_mean = posterior.post_coeff_mean.squeeze()
+        post_coeff_std = np.sqrt(np.diag(posterior.post_coeff_cov))
+        post_coeff_lb = np.quantile(post_coeff, lb, axis=0)
+        post_coeff_ub = np.quantile(post_coeff, ub, axis=0)
+        coeff_prob_pos_post = np.sum((post_coeff > 0) * 1, axis=0) / posterior.num_post_samp
 
         # Error variance
-        err_var_post = posterior.err_var_post
-        err_var_shape_post = posterior.err_var_shape_post
-        err_var_scale_post = posterior.err_var_scale_post
-        if err_var_shape_post > 1:
-            err_var_mean_post = err_var_scale_post / (err_var_shape_post - 1)
+        post_err_var = posterior.post_err_var
+        post_err_var_shape = posterior.post_err_var_shape
+        post_err_var_scale = posterior.post_err_var_scale
+        if post_err_var_shape > 1:
+            post_err_var_mean = post_err_var_scale / (post_err_var_shape - 1)
         else:
-            err_var_mean_post = None
+            post_err_var_mean = None
 
-        if err_var_shape_post > 2:
-            err_var_std_post = np.sqrt(err_var_scale_post ** 2
-                                       / ((err_var_shape_post - 1) ** 2 * (err_var_shape_post - 2)))
+        if post_err_var_shape > 2:
+            post_err_var_std = np.sqrt(post_err_var_scale ** 2
+                                       / ((post_err_var_shape - 1) ** 2 * (post_err_var_shape - 2)))
         else:
-            err_var_std_post = None
+            post_err_var_std = None
 
-        err_var_mode_post = err_var_scale_post / (err_var_shape_post + 1)
-        err_var_lb_post = np.quantile(err_var_post, lb)
-        err_var_ub_post = np.quantile(err_var_post, ub)
+        post_err_var_mode = post_err_var_scale / (post_err_var_shape + 1)
+        post_err_var_lb = np.quantile(post_err_var, lb)
+        post_err_var_ub = np.quantile(post_err_var, ub)
 
         summary = {}
         for k in range(num_coeff):
-            summary[f"Post.Mean[Coeff.{pred_names[k]}]"] = coeff_mean_post[k]
-            summary[f"Post.StdDev[Coeff.{pred_names[k]}]"] = coeff_std_post[k]
-            summary[f"Post.CredInt.LB[Coeff.{pred_names[k]}]"] = coeff_lb_post[k]
-            summary[f"Post.CredInt.UB[Coeff.{pred_names[k]}]"] = coeff_ub_post[k]
+            summary[f"Post.Mean[Coeff.{pred_names[k]}]"] = post_coeff_mean[k]
+            summary[f"Post.StdDev[Coeff.{pred_names[k]}]"] = post_coeff_std[k]
+            summary[f"Post.CredInt.LB[Coeff.{pred_names[k]}]"] = post_coeff_lb[k]
+            summary[f"Post.CredInt.UB[Coeff.{pred_names[k]}]"] = post_coeff_ub[k]
             summary[f"Post.Prob.Positive[Coeff.{pred_names[k]}]"] = coeff_prob_pos_post[k]
 
-        summary["Post.Mean[ErrorVariance]"] = err_var_mean_post
-        summary["Post.Mode[ErrorVariance]"] = err_var_mode_post
-        summary["Post.StdDev[ErrorVariance]"] = err_var_std_post
-        summary["Post.CredInt.LB[ErrorVariance]"] = err_var_lb_post
-        summary["Post.CredInt.UB[ErrorVariance]"] = err_var_ub_post
+        summary["Post.Mean[ErrorVariance]"] = post_err_var_mean
+        summary["Post.Mode[ErrorVariance]"] = post_err_var_mode
+        summary["Post.StdDev[ErrorVariance]"] = post_err_var_std
+        summary["Post.CredInt.LB[ErrorVariance]"] = post_err_var_lb
+        summary["Post.CredInt.UB[ErrorVariance]"] = post_err_var_ub
 
         return summary
