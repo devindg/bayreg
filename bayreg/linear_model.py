@@ -124,8 +124,10 @@ class ConjugateBayesianLinearRegression:
         if np.any(np.isinf(resp)):
             raise ValueError('The response array cannot have Inf and/or -Inf values.')
 
-        if resp.shape[0] < 2:
-            raise ValueError('At least two observations are required to fit a model.')
+        self.response = resp
+        self.num_obs = resp.shape[0]
+        if self.response_index is None:
+            self.response_index = np.arange(resp.shape[0])
 
         # CHECK AND PREPARE PREDICTORS DATA
         if not isinstance(predictors, (np.ndarray, pd.Series, pd.DataFrame)):
@@ -160,16 +162,14 @@ class ConjugateBayesianLinearRegression:
         elif pred.ndim == 1:
             pred = pred.reshape(-1, 1)
         else:
-            if 1 in pred.shape:
-                pred = pred.reshape(-1, 1)
+            pred = pred.reshape(self.num_obs, -1)
 
         if np.any(np.isnan(pred)):
             raise ValueError('The predictors array cannot have null values.')
         if np.any(np.isinf(pred)):
             raise ValueError('The predictors array cannot have Inf and/or -Inf values.')
-
         # -- conformable number of observations
-        if pred.shape[0] != resp.shape[0]:
+        if pred.shape[0] != self.num_obs:
             raise ValueError('The number of observations in the predictors array must match '
                              'the number of observations in the response array.')
 
@@ -179,14 +179,21 @@ class ConjugateBayesianLinearRegression:
         diag_pred_offset_squared = np.diag(pred_offset.T @ pred_offset)
         if np.any(diag_pred_offset_squared == 0):
             self.has_constant = True
-            if np.sum(diag_pred_offset_squared == 0) > 1:
+            if np.sum(diag_pred_offset_squared == 0) > 1 and self.num_obs > 1:
                 raise ValueError('More than one column is a constant value. Only one column can be constant.')
             self.constant_index = np.argwhere(diag_pred_offset_squared == 0)[0][0]
         else:
             self.has_constant = False
 
+        self.predictors = pred
+        self.num_coeff = pred.shape[1]
+        self.num_predictors = self.num_coeff - self.has_constant
+        # Create variable names for predictors, if applicable
+        if self.predictors_names is None:
+            self.predictors_names = [f"x{i + 1}" for i in range(self.num_coeff)]
+
         # -- warn about model stability if the number of predictors exceeds number of observations
-        if pred.shape[1] > pred.shape[0]:
+        if self.num_coeff > self.num_obs:
             warnings.warn('The number of predictors exceeds the number of observations. '
                           'Results will be sensitive to choice of priors.')
 
@@ -198,21 +205,9 @@ class ConjugateBayesianLinearRegression:
             _set_numba_seed(seed)  # for Numba JIT functions
             np.random.seed(seed)
 
-        self.response = resp
-        self.num_obs = resp.shape[0]
-        self.predictors = pred
-        self.num_coeff = pred.shape[1]
-        self.num_predictors = self.num_coeff - self.has_constant
         self.prior = None
         self.posterior = None
         self.post_pred_dist = None
-
-        if self.response_index is None:
-            self.response_index = np.arange(resp.shape[0])
-
-        # Create variable names for predictors, if applicable
-        if self.predictors_names is None:
-            self.predictors_names = [f"x{i + 1}" for i in range(self.num_coeff)]
 
     def _posterior_exists_check(self):
         if self.posterior is None:
@@ -346,9 +341,13 @@ class ConjugateBayesianLinearRegression:
                              "ill-conditioned matrix.")
 
         post_coeff = multivariate_t(df=2 * post_err_var_shape,
-                                    loc=Vt @ post_coeff_mean.squeeze(),
+                                    loc=Vt @ post_coeff_mean.flatten(),
                                     shape=post_coeff_cov,
                                     allow_singular=True).rvs(num_post_samp)
+
+        # This will happen if the number of observations is 1
+        if post_coeff.ndim == 1:
+            post_coeff = post_coeff.reshape((num_post_samp, Vt.shape[0]))
 
         # Back-transform parameters from SVD to original scale
         post_coeff_cov = Vt.T @ post_coeff_cov @ Vt
@@ -381,7 +380,7 @@ class ConjugateBayesianLinearRegression:
         # post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
         #
         # post_coeff = multivariate_t(df=2 * post_err_var_shape,
-        #                             loc=post_coeff_mean.squeeze(),
+        #                             loc=post_coeff_mean.flatten(),
         #                             shape=post_coeff_cov,
         #                             allow_singular=True).rvs(num_post_samp)
 
@@ -434,8 +433,7 @@ class ConjugateBayesianLinearRegression:
             elif x.ndim == 1:
                 x = x.reshape(-1, 1)
             else:
-                if 1 in x.shape:
-                    x = x.reshape(-1, 1)
+                pass
 
             if np.isnan(x).any():
                 raise ValueError('The predictors array cannot have null values.')
@@ -465,7 +463,7 @@ class ConjugateBayesianLinearRegression:
         # V = tau / alpha * (np.eye(n) + x @ beta_cov @ x.T)
         # M = x @ beta_mean
         # post_pred_dist = multivariate_t(df=2 * alpha,
-        #                                 loc=M.squeeze(),
+        #                                 loc=M.flatten(),
         #                                 shape=V).rvs(S)
 
         posterior_prediction = np.empty((self.posterior.num_post_samp, n))
@@ -497,7 +495,7 @@ class ConjugateBayesianLinearRegression:
 
         # Coefficients
         post_coeff = posterior.post_coeff
-        post_coeff_mean = posterior.post_coeff_mean.squeeze()
+        post_coeff_mean = posterior.post_coeff_mean.flatten()
         post_coeff_std = np.sqrt(np.diag(posterior.post_coeff_cov))
         post_coeff_lb = np.quantile(post_coeff, lb, axis=0)
         post_coeff_ub = np.quantile(post_coeff, ub, axis=0)

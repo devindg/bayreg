@@ -93,8 +93,7 @@ def watanabe_akaike(response, post_resp_mean, post_err_var):
         warnings.warn(f"Some of the posterior variances of the log predictive density "
                       f"exceed 0.4 ({pct_large_p_waic}%, {num_large_p_waic}). This may "
                       f"indicate that WAIC is failing as an approximation to LOO-CV. "
-                      f"A more robust approach, such as LOO or K-fold CV, is "
-                      f"recommended.")
+                      f"A more robust approach, such as K-fold CV, is recommended.")
 
     return WAIC(waic=waic, eff_num_params=eff_num_params, post_var_lppd=p_waic_i)
 
@@ -102,14 +101,15 @@ def watanabe_akaike(response, post_resp_mean, post_err_var):
 def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
     prediction_mean = np.mean(post_pred_dist, axis=0)
     prediction_variance = np.mean((post_pred_dist - prediction_mean) ** 2, axis=1)
-    prediction_bias = np.mean(response.squeeze() - prediction_mean)
-    mspe = prediction_variance + prediction_bias ** 2 + post_err_var.squeeze()
+    prediction_bias = np.mean(response.flatten() - prediction_mean)
+    mspe = prediction_variance + prediction_bias ** 2 + post_err_var.flatten()
 
     return MSPE(mspe, prediction_bias, prediction_variance)
 
 
 def r_squared(post_pred_dist, post_err_var):
-    predicted_variance = np.var(post_pred_dist, axis=1, ddof=1).reshape(-1, 1)
-    r2 = predicted_variance / (predicted_variance + post_err_var)
+    n = post_pred_dist.shape[1]
+    predicted_variance = np.var(post_pred_dist, axis=1, ddof=min(1, n - 1))
+    r2 = predicted_variance / (predicted_variance + post_err_var.flatten())
 
     return r2
