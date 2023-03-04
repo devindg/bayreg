@@ -89,7 +89,7 @@ def watanabe_akaike(response, post_resp_mean, post_err_var):
     if np.any(p_waic_i > 0.4):
         large_p_waic = (p_waic_i > 0.4) * 1
         num_large_p_waic = np.sum(large_p_waic)
-        pct_large_p_waic = (num_large_p_waic / n) * 100
+        pct_large_p_waic = round((num_large_p_waic / n) * 100, 3)
         warnings.warn(f"Some of the posterior variances of the log predictive density "
                       f"exceed 0.4 ({pct_large_p_waic}%, {num_large_p_waic}). This may "
                       f"indicate that WAIC is failing as an approximation to LOO-CV. "
@@ -102,7 +102,7 @@ def watanabe_akaike(response, post_resp_mean, post_err_var):
 def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
     prediction_mean = np.mean(post_pred_dist, axis=0)
     prediction_variance = np.mean((post_pred_dist - prediction_mean) ** 2, axis=1)
-    prediction_bias = np.mean(response - prediction_mean)
+    prediction_bias = np.mean(response.squeeze() - prediction_mean)
     mspe = prediction_variance + prediction_bias ** 2 + post_err_var.squeeze()
 
     return MSPE(mspe, prediction_bias, prediction_variance)
