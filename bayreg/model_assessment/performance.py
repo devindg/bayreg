@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.special import logsumexp
 from typing import Union, NamedTuple
+import warnings
+from scipy.stats import norm
 
 
 class MSPE(NamedTuple):
@@ -12,14 +14,15 @@ class MSPE(NamedTuple):
 class WAIC(NamedTuple):
     waic: np.ndarray
     eff_num_params: np.ndarray
+    post_var_lppd: np.ndarray
 
 
-def pointwise_loglike_norm(response, predicted_response, error_variance):
-    return -0.5 * (np.log(2. * np.pi * error_variance)
-                   + (response.T - predicted_response) ** 2 / error_variance)
+def pointwise_loglike_norm(response, response_mean, error_variance):
+    error_std = np.sqrt(error_variance)
+    return norm.logpdf(response, loc=response_mean, scale=error_std)
 
 
-def watanabe_akaike(response, post_pred_dist, post_err_var):
+def watanabe_akaike(response, post_resp_mean, post_err_var):
     """
     Source: Understanding predictive information criteria for Bayesian models
             Gelman, Hwang, and Vehtari (2013)
@@ -70,22 +73,37 @@ def watanabe_akaike(response, post_pred_dist, post_err_var):
     elements are operated on using fast matrix calculations.
 
     """
+    # Number of observations and posterior samples
+    n, S = response.size, post_err_var.size
+
     log_prob = pointwise_loglike_norm(response,
-                                      post_pred_dist,
+                                      post_resp_mean,
                                       post_err_var)
 
-    log_ppd = np.sum(logsumexp(log_prob, axis=0, b=1 / post_pred_dist.shape[0]))
-    eff_num_params = np.sum(np.var(log_prob, axis=0, ddof=1))
+    log_ppd_i = logsumexp(log_prob, axis=0, b=1 / S)
+    log_ppd = np.sum(log_ppd_i)
+    p_waic_i = np.var(log_prob, axis=0, ddof=1)
+    eff_num_params = np.sum(p_waic_i)
     waic = -2. * (log_ppd - eff_num_params)
 
-    return WAIC(waic=waic, eff_num_params=eff_num_params)
+    if np.any(p_waic_i > 0.4):
+        large_p_waic = (p_waic_i > 0.4) * 1
+        num_large_p_waic = np.sum(large_p_waic)
+        pct_large_p_waic = (num_large_p_waic / n) * 100
+        warnings.warn(f"Some of the posterior variances of the log predictive density "
+                      f"exceed 0.4 ({pct_large_p_waic}%, {num_large_p_waic}). This may "
+                      f"indicate that WAIC is failing as an approximation to LOO-CV. "
+                      f"A more robust approach, such as LOO or K-fold CV, is "
+                      f"recommended.")
+
+    return WAIC(waic=waic, eff_num_params=eff_num_params, post_var_lppd=p_waic_i)
 
 
 def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
-    prediction_mean = np.mean(post_pred_dist, axis=0).reshape(1, -1)
-    prediction_variance = np.mean((post_pred_dist - prediction_mean) ** 2, axis=1).reshape(-1, 1)
-    prediction_bias = np.mean(response.T - prediction_mean)
-    mspe = prediction_variance + prediction_bias ** 2 + post_err_var
+    prediction_mean = np.mean(post_pred_dist, axis=0)
+    prediction_variance = np.mean((post_pred_dist - prediction_mean) ** 2, axis=1)
+    prediction_bias = np.mean(response - prediction_mean)
+    mspe = prediction_variance + prediction_bias ** 2 + post_err_var.squeeze()
 
     return MSPE(mspe, prediction_bias, prediction_variance)
 

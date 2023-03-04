@@ -5,7 +5,7 @@ from scipy.stats import multivariate_t, invgamma
 from linear_algebra.array_checks import is_symmetric, is_positive_definite
 from linear_algebra.array_operations import mat_inv
 from linear_algebra.vectorized import vec_norm
-from model_assessment.in_sample_fit import watanabe_akaike, mean_squared_prediction_error, r_squared
+from model_assessment.performance import watanabe_akaike, mean_squared_prediction_error, r_squared
 from numba import njit
 from typing import Union, NamedTuple
 
@@ -87,6 +87,8 @@ class ConjugateBayesianLinearRegression:
         :param seed:
         """
 
+        self.response_type = type(response)
+        self.predictors_type = type(predictors)
         self.response_index = None
         self.predictors_names = None
 
@@ -212,11 +214,19 @@ class ConjugateBayesianLinearRegression:
         if self.predictors_names is None:
             self.predictors_names = [f"x{i + 1}" for i in range(self.num_coeff)]
 
-    @staticmethod
-    def _svd(predictors):
-        _, s, Vt = np.linalg.svd(predictors, full_matrices=False)
-        S = np.diag(s)
-        return S, Vt
+    def _posterior_exists_check(self):
+        if self.posterior is None:
+            raise AttributeError("No posterior distribution was found. The fit() method must be called.")
+
+        return
+
+    def _post_pred_dist_exists_check(self):
+        if self.post_pred_dist is None:
+            raise AttributeError("No posterior predictive distribution was found. "
+                                 "TThe fit() and posterior_predictive_distribution() methods "
+                                 "must be called.")
+
+        return
 
     def fit(self,
             num_post_samp=1000,
@@ -237,7 +247,8 @@ class ConjugateBayesianLinearRegression:
         """
 
         y, x, n, k = self.response, self.predictors, self.num_obs, self.num_coeff
-        S, Vt = self._svd(x)
+        _, s, Vt = np.linalg.svd(x, full_matrices=False)
+        S = np.diag(s)
         XtX = Vt.T @ (S ** 2) @ Vt
 
         # Check shape prior for error variance
@@ -341,7 +352,7 @@ class ConjugateBayesianLinearRegression:
 
         # Back-transform parameters from SVD to original scale
         post_coeff_cov = Vt.T @ post_coeff_cov @ Vt
-        post_coeff = (Vt.T @ post_coeff.T).T
+        post_coeff = post_coeff @ Vt  # Same as (Vt.T @ post_coeff.T).T
 
         self.posterior = Posterior(num_post_samp=num_post_samp,
                                    post_coeff_cov=post_coeff_cov,
@@ -368,7 +379,7 @@ class ConjugateBayesianLinearRegression:
         #
         # # Marginal posterior distribution for coefficients
         # post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
-
+        #
         # post_coeff = multivariate_t(df=2 * post_err_var_shape,
         #                             loc=post_coeff_mean.squeeze(),
         #                             shape=post_coeff_cov,
@@ -392,63 +403,55 @@ class ConjugateBayesianLinearRegression:
             x = predictors.copy()
             # Check and prepare predictor data
             # -- data types match across instantiated predictors and predictors
-            if not isinstance(predictors, type(self.predictors)):
-                raise TypeError('Object type for predictors does not match the predictors '
-                                'object type instantiated with ConjugateBayesianLinearRegression.')
-            else:
-                # -- if Pandas type, grab index and column names
-                if isinstance(predictors, (pd.Series, pd.DataFrame)):
-                    if not isinstance(predictors.index, type(self.response_index)):
-                        raise TypeError('Index type for predictors does not match the predictors '
-                                        'index type instantiated with ConjugateBayesianLinearRegression.')
+            # -- if Pandas type, grab index and column names
+            if isinstance(predictors, (pd.Series, pd.DataFrame)):
+                if not isinstance(predictors.index, type(self.response_index)):
+                    raise TypeError('Index type for predictors does not match the predictors '
+                                    'index type instantiated with ConjugateBayesianLinearRegression.')
 
-                    if isinstance(predictors, pd.Series):
-                        predictors_names = [predictors.name]
-                    else:
-                        predictors_names = predictors.columns.values.tolist()
-
-                    if len(predictors_names) != self.num_coeff:
-                        raise ValueError(
-                            f'The number of predictors used for historical estimation {self.num_coeff} '
-                            f'does not match the number of predictors specified for forecasting '
-                            f'{len(predictors_names)}. The same set of predictors must be used.')
-                    else:
-                        if not all(self.predictors_names[i] == predictors_names[i]
-                                   for i in range(self.num_coeff)):
-                            raise ValueError('The order and names of the columns in predictors must match '
-                                             'the order and names in the predictors array instantiated '
-                                             'with the ConjugateBayesianLinearRegression class.')
-
-                    x = x.to_numpy()
-
-                # -- dimensions
-                if x.ndim not in (1, 2):
-                    raise ValueError('The predictors array must have dimension 1 or 2.')
-                elif x.ndim == 1:
-                    x = x.reshape(-1, 1)
+                if isinstance(predictors, pd.Series):
+                    predictors_names = [predictors.name]
                 else:
-                    if 1 in x.shape:
-                        x = x.reshape(-1, 1)
+                    predictors_names = predictors.columns.values.tolist()
 
-                if np.isnan(x).any():
-                    raise ValueError('The predictors array cannot have null values.')
-                if np.isinf(x).any():
-                    raise ValueError('The predictors array cannot have Inf and/or -Inf values.')
+                if len(predictors_names) != self.num_coeff:
+                    raise ValueError(
+                        f'The number of predictors used for historical estimation {self.num_coeff} '
+                        f'does not match the number of predictors specified for forecasting '
+                        f'{len(predictors_names)}. The same set of predictors must be used.')
+                else:
+                    if not all(self.predictors_names[i] == predictors_names[i]
+                               for i in range(self.num_coeff)):
+                        raise ValueError('The order and names of the columns in predictors must match '
+                                         'the order and names in the predictors array instantiated '
+                                         'with the ConjugateBayesianLinearRegression class.')
 
-                # Final sanity checks
-                if x.shape[1] != self.num_coeff:
-                    raise ValueError("The number of columns in predictors must match the "
-                                     "number of columns in the predictor/design matrix "
-                                     "instantiated with the ConjugateBayesianLinearRegression class. "
-                                     "Ensure that the number and order of predictors matches "
-                                     "the number and order of predictors in the design matrix "
-                                     "used for model fitting.")
+                x = x.to_numpy()
 
-        if self.posterior is None:
-            raise AttributeError("A posterior distribution has not been generated "
-                                 "because no model has been fit to data. The predict() "
-                                 "method is operational only if fit() has been used.")
+            # -- dimensions
+            if x.ndim not in (1, 2):
+                raise ValueError('The predictors array must have dimension 1 or 2.')
+            elif x.ndim == 1:
+                x = x.reshape(-1, 1)
+            else:
+                if 1 in x.shape:
+                    x = x.reshape(-1, 1)
 
+            if np.isnan(x).any():
+                raise ValueError('The predictors array cannot have null values.')
+            if np.isinf(x).any():
+                raise ValueError('The predictors array cannot have Inf and/or -Inf values.')
+
+            # Final sanity checks
+            if x.shape[1] != self.num_coeff:
+                raise ValueError("The number of columns in predictors must match the "
+                                 "number of columns in the predictor/design matrix "
+                                 "instantiated with the ConjugateBayesianLinearRegression class. "
+                                 "Ensure that the number and order of predictors matches "
+                                 "the number and order of predictors in the design matrix "
+                                 "used for model fitting.")
+
+        self._posterior_exists_check()
         n = predictors.shape[0]
 
         # # Closed-form posterior predictive distribution.
@@ -477,20 +480,12 @@ class ConjugateBayesianLinearRegression:
         return posterior_prediction
 
     def posterior_predictive_distribution(self):
-        if self.posterior is None:
-            raise AttributeError("A posterior distribution has not been generated "
-                                 "because no model has been fit to data. The "
-                                 "posterior_predictive_distribution() method is operational "
-                                 "only if fit() has been used.")
+        self._posterior_exists_check()
         self.post_pred_dist = self.predict(self.predictors)
         return self.post_pred_dist
 
     def posterior_summary(self, cred_int_level=0.05):
-        if self.posterior is None:
-            raise AttributeError("A posterior distribution has not been generated "
-                                 "because no model has been fit to data. The "
-                                 "posterior_summary() method is operational "
-                                 "only if fit() has been used.")
+        self._posterior_exists_check()
 
         if not 0 < cred_int_level < 1:
             raise ValueError("The credible interval level must be a value in (0, 1).")
@@ -543,34 +538,23 @@ class ConjugateBayesianLinearRegression:
 
         return summary
 
-
-class ModelPerformance:
-    def __init__(self, model: ConjugateBayesianLinearRegression):
-        if not isinstance(model, ConjugateBayesianLinearRegression):
-            raise ValueError("The model object must be of type ConjugateBayesianLinearRegression.")
-        self.model = model
-
-        if self.model.posterior is None:
-            raise AttributeError("No posterior distribution for the model's parameters was found. "
-                                 "The ModelSummary class is not viable. Make sure to use the "
-                                 "fit() method in ConjugateBayesianLinearRegression.")
-
-        if self.model.post_pred_dist is None:
-            raise AttributeError("No posterior predictive distribution was found. "
-                                 "The ModelSummary class is not viable. Make sure to use the "
-                                 "fit() and posterior_predictive_distribution() methods "
-                                 "in ConjugateBayesianLinearRegression.")
-
     def waic(self):
-        return watanabe_akaike(response=self.model.response,
-                               post_pred_dist=self.model.post_pred_dist,
-                               post_err_var=self.model.posterior.post_err_var)
+        self._posterior_exists_check()
+        x = self.predictors
+        post_resp_mean = self.posterior.post_coeff @ x.T
+        return watanabe_akaike(response=self.response.T,
+                               post_resp_mean=post_resp_mean,
+                               post_err_var=self.posterior.post_err_var)
 
     def mspe(self):
-        return mean_squared_prediction_error(response=self.model.response,
-                                             post_pred_dist=self.model.post_pred_dist,
-                                             post_err_var=self.model.posterior.post_err_var)
+        self._posterior_exists_check()
+        self._post_pred_dist_exists_check()
+        return mean_squared_prediction_error(response=self.response,
+                                             post_pred_dist=self.post_pred_dist,
+                                             post_err_var=self.posterior.post_err_var)
 
     def r_sqr(self):
-        return r_squared(post_pred_dist=self.model.post_pred_dist,
-                         post_err_var=self.model.posterior.post_err_var)
+        self._posterior_exists_check()
+        self._post_pred_dist_exists_check()
+        return r_squared(post_pred_dist=self.post_pred_dist,
+                         post_err_var=self.posterior.post_err_var)
