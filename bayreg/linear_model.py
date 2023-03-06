@@ -162,7 +162,7 @@ class ConjugateBayesianLinearRegression:
         elif pred.ndim == 1:
             pred = pred.reshape(-1, 1)
         else:
-            pred = pred.reshape(self.num_obs, -1)
+            pass
 
         if np.any(np.isnan(pred)):
             raise ValueError('The predictors array cannot have null values.')
@@ -401,12 +401,15 @@ class ConjugateBayesianLinearRegression:
         else:
             x = predictors.copy()
             # Check and prepare predictor data
-            # -- data types match across instantiated predictors and predictors
+            # -- check if data types match across instantiated predictors and predictors
+            if not isinstance(predictors, self.predictors_type):
+                warnings.warn('Object type for predictors does not match the predictors '
+                              'object type instantiated with ConjugateBayesianLinearRegression.')
             # -- if Pandas type, grab index and column names
             if isinstance(predictors, (pd.Series, pd.DataFrame)):
                 if not isinstance(predictors.index, type(self.response_index)):
-                    raise TypeError('Index type for predictors does not match the predictors '
-                                    'index type instantiated with ConjugateBayesianLinearRegression.')
+                    warnings.warn('Index type for predictors does not match the predictors '
+                                  'index type instantiated with ConjugateBayesianLinearRegression.')
 
                 if isinstance(predictors, pd.Series):
                     predictors_names = [predictors.name]
