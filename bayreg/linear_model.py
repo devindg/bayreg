@@ -403,13 +403,14 @@ class ConjugateBayesianLinearRegression:
             # Check and prepare predictor data
             # -- check if data types match across instantiated predictors and predictors
             if not isinstance(predictors, self.predictors_type):
-                warnings.warn('Object type for predictors does not match the predictors '
-                              'object type instantiated with ConjugateBayesianLinearRegression.')
+                warnings.warn('Object type for predictors does not match the predictors object type '
+                              'instantiated with ConjugateBayesianLinearRegression. You can ignore this '
+                              'message with the posterior_predictive_distribution() method.')
             # -- if Pandas type, grab index and column names
             if isinstance(predictors, (pd.Series, pd.DataFrame)):
                 if not isinstance(predictors.index, type(self.response_index)):
-                    warnings.warn('Index type for predictors does not match the predictors '
-                                  'index type instantiated with ConjugateBayesianLinearRegression.')
+                    warnings.warn('Index type for predictors does not match the predictors index type '
+                                  'instantiated with ConjugateBayesianLinearRegression.')
 
                 if isinstance(predictors, pd.Series):
                     predictors_names = [predictors.name]
@@ -483,6 +484,7 @@ class ConjugateBayesianLinearRegression:
     def posterior_predictive_distribution(self):
         self._posterior_exists_check()
         self.post_pred_dist = self.predict(self.predictors)
+
         return self.post_pred_dist
 
     def posterior_summary(self, cred_int_level=0.05):
@@ -543,6 +545,7 @@ class ConjugateBayesianLinearRegression:
         self._posterior_exists_check()
         x = self.predictors
         post_resp_mean = self.posterior.post_coeff @ x.T
+
         return watanabe_akaike(response=self.response.T,
                                post_resp_mean=post_resp_mean,
                                post_err_var=self.posterior.post_err_var)
@@ -550,6 +553,7 @@ class ConjugateBayesianLinearRegression:
     def mspe(self):
         self._posterior_exists_check()
         self._post_pred_dist_exists_check()
+
         return mean_squared_prediction_error(response=self.response,
                                              post_pred_dist=self.post_pred_dist,
                                              post_err_var=self.posterior.post_err_var)
@@ -557,5 +561,6 @@ class ConjugateBayesianLinearRegression:
     def r_sqr(self):
         self._posterior_exists_check()
         self._post_pred_dist_exists_check()
+
         return r_squared(post_pred_dist=self.post_pred_dist,
                          post_err_var=self.posterior.post_err_var)
