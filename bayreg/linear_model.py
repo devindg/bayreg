@@ -15,17 +15,17 @@ class Posterior(NamedTuple):
     post_coeff_mean: np.ndarray
     post_coeff_cov: np.ndarray
     post_coeff: np.ndarray
-    post_err_var_shape: np.ndarray
-    post_err_var_scale: np.ndarray
+    post_err_var_shape: float
+    post_err_var_scale: float
     post_err_var: np.ndarray
 
 
 class Prior(NamedTuple):
     prior_coeff_mean: np.ndarray
     prior_coeff_cov: np.ndarray
-    prior_err_var_shape: np.ndarray
-    prior_err_var_scale: np.ndarray
-    zellner_prior_obs: float
+    prior_err_var_shape: Union[int, float]
+    prior_err_var_scale: Union[int, float]
+    zellner_prior_obs: Union[int, float]
 
 
 @njit
@@ -77,8 +77,8 @@ class ConjugateBayesianLinearRegression:
     """
 
     def __init__(self,
-                 response: Union[np.ndarray, pd.Series, pd.DataFrame],
-                 predictors: Union[np.ndarray, pd.Series, pd.DataFrame],
+                 response: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
+                 predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
                  seed: int = None):
         """
 
@@ -94,10 +94,15 @@ class ConjugateBayesianLinearRegression:
 
         # CHECK AND PREPARE RESPONSE DATA
         # -- dimension and null/inf checks
-        if not isinstance(response, (np.ndarray, pd.Series, pd.DataFrame)):
-            raise TypeError("The response array must be a Numpy array, Pandas Series, or Pandas DataFrame.")
+        if not isinstance(response, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)):
+            raise TypeError("The response array must be a Numpy array, list, tuple, Pandas Series, \n"
+                            "or Pandas DataFrame.")
         else:
             resp = response.copy()
+
+            if isinstance(response, (list, tuple)):
+                resp = np.asarray(response)
+
             if isinstance(response, (pd.Series, pd.DataFrame)):
                 if isinstance(response, pd.Series):
                     self.response_name = [response.name]
@@ -130,13 +135,19 @@ class ConjugateBayesianLinearRegression:
             self.response_index = np.arange(resp.shape[0])
 
         # CHECK AND PREPARE PREDICTORS DATA
-        if not isinstance(predictors, (np.ndarray, pd.Series, pd.DataFrame)):
-            raise TypeError("The predictors array must be a Numpy array, Pandas Series, or Pandas DataFrame.")
+        if not isinstance(predictors, (np.ndarray, list, tuple,  pd.Series, pd.DataFrame)):
+            raise TypeError("The predictors array must be a Numpy array, list, tuple, Pandas Series, \n"
+                            "or Pandas DataFrame.")
         else:
             pred = predictors.copy()
+
+            if isinstance(predictors, (list, tuple)):
+                pred = np.asarray(predictors)
+
             # -- check if response and predictors are same date type.
-            if isinstance(response, np.ndarray) and not isinstance(predictors, np.ndarray):
-                raise TypeError('The response array provided is a NumPy array, but the predictors '
+            if (isinstance(response, (np.ndarray, list, tuple))
+                    and not isinstance(predictors, (np.ndarray, list, tuple))):
+                raise TypeError('The response array provided is a NumPy array, list, or tuple, but the predictors '
                                 'array is not. Object types must match.')
 
             if (isinstance(response, (pd.Series, pd.DataFrame)) and
@@ -224,12 +235,12 @@ class ConjugateBayesianLinearRegression:
         return
 
     def fit(self,
-            num_post_samp=1000,
-            prior_coeff_mean=None,
-            prior_coeff_cov=None,
-            prior_err_var_shape=None,
-            prior_err_var_scale=None,
-            zellner_prior_obs=None):
+            num_post_samp: int = 1000,
+            prior_coeff_mean: Union[list, tuple, np.ndarray] = None,
+            prior_coeff_cov: Union[list, tuple, np.ndarray] = None,
+            prior_err_var_shape: Union[int, float] = None,
+            prior_err_var_scale: Union[int, float] = None,
+            zellner_prior_obs: Union[int, float] = None):
         """
 
         :param num_post_samp:
@@ -248,38 +259,54 @@ class ConjugateBayesianLinearRegression:
 
         # Check shape prior for error variance
         if prior_err_var_shape is not None:
-            if not prior_err_var_shape > 0:
-                raise ValueError('prior_err_var_shape must be strictly positive.')
+            if not isinstance(prior_err_var_shape, (int, float)):
+                raise TypeError("prior_err_var_shape must be a positive integer or float.")
+            else:
+                if not prior_err_var_shape > 0:
+                    raise ValueError('prior_err_var_shape must be strictly positive.')
         else:
             prior_err_var_shape = 1e-6
 
         # Check scale prior for error variance
         if prior_err_var_scale is not None:
-            if not prior_err_var_scale > 0:
-                raise ValueError('prior_err_var_scale must be strictly positive.')
+            if not isinstance(prior_err_var_scale, (int, float)):
+                raise TypeError("prior_err_var_scalee must be a positive integer or float.")
+            else:
+                if not prior_err_var_scale > 0:
+                    raise ValueError('prior_err_var_scale must be strictly positive.')
         else:
             prior_err_var_scale = 1e-6
 
         # Check prior mean for regression coefficients
         if prior_coeff_mean is not None:
-            if not prior_coeff_mean.shape == (self.num_coeff, 1):
-                raise ValueError(f'prior_coeff_mean must have shape ({self.num_coeff}, 1).')
-            if np.any(np.isnan(prior_coeff_mean)):
-                raise ValueError('prior_coeff_mean cannot have NaN values.')
-            if np.any(np.isinf(prior_coeff_mean)):
-                raise ValueError('prior_coeff_mean cannot have Inf and/or -Inf values.')
+            if not isinstance(prior_coeff_mean, (list, tuple, np.ndarray)):
+                raise TypeError("prior_coeff_mean must be a list, tuple, or NumPy array.")
+            else:
+                if isinstance(prior_coeff_mean, (list, tuple)):
+                    prior_coeff_mean = np.asarray(prior_coeff_mean).reshape(self.num_coeff, 1)
+                if not prior_coeff_mean.shape == (self.num_coeff, 1):
+                    raise ValueError(f'prior_coeff_mean must have shape ({self.num_coeff}, 1).')
+                if np.any(np.isnan(prior_coeff_mean)):
+                    raise ValueError('prior_coeff_mean cannot have NaN values.')
+                if np.any(np.isinf(prior_coeff_mean)):
+                    raise ValueError('prior_coeff_mean cannot have Inf and/or -Inf values.')
         else:
             prior_coeff_mean = np.zeros((self.num_coeff, 1))
 
         # Check prior covariance matrix for regression coefficients
         if prior_coeff_cov is not None:
-            if not prior_coeff_cov.shape == (self.num_coeff, self.num_coeff):
-                raise ValueError(f'prior_coeff_cov must have shape ({self.num_coeff}, '
-                                 f'{self.num_coeff}).')
-            if not is_positive_definite(prior_coeff_cov):
-                raise ValueError('prior_coeff_cov must be a positive definite matrix.')
-            if not is_symmetric(prior_coeff_cov):
-                raise ValueError('prior_coeff_cov must be a symmetric matrix.')
+            if not isinstance(prior_coeff_cov, (list, tuple, np.ndarray)):
+                raise TypeError("prior_coeff_cov must be a list, tuple, or NumPy array.")
+            else:
+                if isinstance(prior_coeff_cov, (list, tuple)):
+                    prior_coeff_cov = np.asarray(prior_coeff_cov)
+                if not prior_coeff_cov.shape == (self.num_coeff, self.num_coeff):
+                    raise ValueError(f'prior_coeff_cov must have shape ({self.num_coeff}, '
+                                     f'{self.num_coeff}).')
+                if not is_positive_definite(prior_coeff_cov):
+                    raise ValueError('prior_coeff_cov must be a positive definite matrix.')
+                if not is_symmetric(prior_coeff_cov):
+                    raise ValueError('prior_coeff_cov must be a symmetric matrix.')
 
             prior_coeff_prec = mat_inv(prior_coeff_cov)
         else:
@@ -295,7 +322,13 @@ class ConjugateBayesianLinearRegression:
             by w is set to 0.5.
             '''
 
-            if zellner_prior_obs is None:
+            if zellner_prior_obs is not None:
+                if not isinstance(zellner_prior_obs, (int, float)):
+                    raise TypeError('zellner_prior_obs must be a positive integer or float.')
+                else:
+                    if not zellner_prior_obs > 0:
+                        raise ValueError('zellner_prior_obs must be strictly positive.')
+            else:
                 zellner_prior_obs = 1e-6
 
             w = 0.5
@@ -386,7 +419,9 @@ class ConjugateBayesianLinearRegression:
 
         return self.posterior
 
-    def predict(self, predictors, mean_only=False):
+    def predict(self,
+                predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
+                mean_only: bool = False):
         """
 
         :param predictors:
@@ -395,8 +430,8 @@ class ConjugateBayesianLinearRegression:
         """
 
         # -- check if object type is valid
-        if not isinstance(predictors, (pd.Series, pd.DataFrame, np.ndarray)):
-            raise TypeError("The predictors array must be a NumPy array, Pandas Series, "
+        if not isinstance(predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)):
+            raise TypeError("The predictors array must be a NumPy array, list, tuple, Pandas Series, \n"
                             "or Pandas DataFrame.")
         else:
             x = predictors.copy()
@@ -406,6 +441,10 @@ class ConjugateBayesianLinearRegression:
                 warnings.warn('Object type for predictors does not match the predictors object type '
                               'instantiated with ConjugateBayesianLinearRegression. You can ignore this '
                               'message with the posterior_predictive_distribution() method.')
+
+            if isinstance(predictors, (list, tuple)):
+                x = np.asarray(x)
+
             # -- if Pandas type, grab index and column names
             if isinstance(predictors, (pd.Series, pd.DataFrame)):
                 if not isinstance(predictors.index, type(self.response_index)):
@@ -487,7 +526,7 @@ class ConjugateBayesianLinearRegression:
 
         return self.post_pred_dist
 
-    def posterior_summary(self, cred_int_level=0.05):
+    def posterior_summary(self, cred_int_level: float = 0.05):
         self._posterior_exists_check()
 
         if not 0 < cred_int_level < 1:
