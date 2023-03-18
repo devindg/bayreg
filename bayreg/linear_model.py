@@ -98,10 +98,10 @@ class ConjugateBayesianLinearRegression:
             raise TypeError("The response array must be a Numpy array, list, tuple, Pandas Series, \n"
                             "or Pandas DataFrame.")
         else:
-            resp = response.copy()
-
             if isinstance(response, (list, tuple)):
-                resp = np.asarray(response)
+                resp = np.asarray(response, dtype=np.float64)
+            else:
+                resp = response.copy()
 
             if isinstance(response, (pd.Series, pd.DataFrame)):
                 if isinstance(response, pd.Series):
@@ -135,35 +135,35 @@ class ConjugateBayesianLinearRegression:
             self.response_index = np.arange(resp.shape[0])
 
         # CHECK AND PREPARE PREDICTORS DATA
-        if not isinstance(predictors, (np.ndarray, list, tuple,  pd.Series, pd.DataFrame)):
+        if not isinstance(predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)):
             raise TypeError("The predictors array must be a Numpy array, list, tuple, Pandas Series, \n"
                             "or Pandas DataFrame.")
         else:
-            pred = predictors.copy()
-
             if isinstance(predictors, (list, tuple)):
-                pred = np.asarray(predictors)
+                pred = np.asarray(predictors, dtype=np.float64)
+            else:
+                pred = predictors.copy()
 
-            # -- check if response and predictors are same date type.
+            # -- check if response and predictors are same data type.
             if (isinstance(response, (np.ndarray, list, tuple))
-                    and not isinstance(predictors, (np.ndarray, list, tuple))):
+                    and not isinstance(pred, (np.ndarray, list, tuple))):
                 raise TypeError('The response array provided is a NumPy array, list, or tuple, but the predictors '
                                 'array is not. Object types must match.')
 
             if (isinstance(response, (pd.Series, pd.DataFrame)) and
-                    not isinstance(predictors, (pd.Series, pd.DataFrame))):
+                    not isinstance(pred, (pd.Series, pd.DataFrame))):
                 raise TypeError('The response array provided is a Pandas Series/DataFrame, but the predictors '
                                 'array is not. Object types must match.')
 
             # -- get predictor names if a Pandas object
-            if isinstance(predictors, (pd.Series, pd.DataFrame)):
-                if not (predictors.index == response.index).all():
+            if isinstance(pred, (pd.Series, pd.DataFrame)):
+                if not (pred.index == response.index).all():
                     raise ValueError('The response and predictors indexes must match.')
 
-                if isinstance(predictors, pd.Series):
-                    self.predictors_names = [predictors.name]
+                if isinstance(pred, pd.Series):
+                    self.predictors_names = [pred.name]
                 else:
-                    self.predictors_names = predictors.columns.values.tolist()
+                    self.predictors_names = pred.columns.values.tolist()
 
                 pred = pred.to_numpy()
 
@@ -259,21 +259,19 @@ class ConjugateBayesianLinearRegression:
 
         # Check shape prior for error variance
         if prior_err_var_shape is not None:
-            if not isinstance(prior_err_var_shape, (int, float)):
-                raise TypeError("prior_err_var_shape must be a positive integer or float.")
+            if isinstance(prior_err_var_shape, (int, float)) and prior_err_var_shape > 0:
+                pass
             else:
-                if not prior_err_var_shape > 0:
-                    raise ValueError('prior_err_var_shape must be strictly positive.')
+                raise ValueError('prior_err_var_shape must be a strictly positive integer or float.')
         else:
             prior_err_var_shape = 1e-6
 
         # Check scale prior for error variance
         if prior_err_var_scale is not None:
-            if not isinstance(prior_err_var_scale, (int, float)):
-                raise TypeError("prior_err_var_scalee must be a positive integer or float.")
+            if isinstance(prior_err_var_scale, (int, float)) and prior_err_var_scale > 0:
+                pass
             else:
-                if not prior_err_var_scale > 0:
-                    raise ValueError('prior_err_var_scale must be strictly positive.')
+                raise ValueError('prior_err_var_scale must be a strictly positive integer or float.')
         else:
             prior_err_var_scale = 1e-6
 
@@ -283,7 +281,17 @@ class ConjugateBayesianLinearRegression:
                 raise TypeError("prior_coeff_mean must be a list, tuple, or NumPy array.")
             else:
                 if isinstance(prior_coeff_mean, (list, tuple)):
-                    prior_coeff_mean = np.asarray(prior_coeff_mean).reshape(self.num_coeff, 1)
+                    prior_coeff_mean = np.asarray(prior_coeff_mean, dtype=np.float64)
+                else:
+                    prior_coeff_mean = prior_coeff_mean.astype(float)
+
+                if prior_coeff_mean.ndim not in (1, 2):
+                    raise ValueError('prior_coeff_mean must have dimension 1 or 2.')
+                elif prior_coeff_mean.ndim == 1:
+                    prior_coeff_mean = prior_coeff_mean.reshape(self.num_coeff, 1)
+                else:
+                    pass
+
                 if not prior_coeff_mean.shape == (self.num_coeff, 1):
                     raise ValueError(f'prior_coeff_mean must have shape ({self.num_coeff}, 1).')
                 if np.any(np.isnan(prior_coeff_mean)):
@@ -299,7 +307,12 @@ class ConjugateBayesianLinearRegression:
                 raise TypeError("prior_coeff_cov must be a list, tuple, or NumPy array.")
             else:
                 if isinstance(prior_coeff_cov, (list, tuple)):
-                    prior_coeff_cov = np.asarray(prior_coeff_cov)
+                    prior_coeff_cov = np.atleast_2d(np.asarray(prior_coeff_cov, dtype=np.float64))
+                else:
+                    prior_coeff_cov = np.atleast_2d(prior_coeff_cov.astype(float))
+
+                if prior_coeff_cov.ndim != 2:
+                    raise ValueError('prior_coeff_cov must have dimension 2.')
                 if not prior_coeff_cov.shape == (self.num_coeff, self.num_coeff):
                     raise ValueError(f'prior_coeff_cov must have shape ({self.num_coeff}, '
                                      f'{self.num_coeff}).')
@@ -323,11 +336,10 @@ class ConjugateBayesianLinearRegression:
             '''
 
             if zellner_prior_obs is not None:
-                if not isinstance(zellner_prior_obs, (int, float)):
-                    raise TypeError('zellner_prior_obs must be a positive integer or float.')
+                if isinstance(zellner_prior_obs, (int, float)) and zellner_prior_obs > 0:
+                    pass
                 else:
-                    if not zellner_prior_obs > 0:
-                        raise ValueError('zellner_prior_obs must be strictly positive.')
+                    raise ValueError('zellner_prior_obs must be a strictly positive integer or float.')
             else:
                 zellner_prior_obs = 1e-6
 
@@ -434,39 +446,36 @@ class ConjugateBayesianLinearRegression:
             raise TypeError("The predictors array must be a NumPy array, list, tuple, Pandas Series, \n"
                             "or Pandas DataFrame.")
         else:
-            x = predictors.copy()
+            if isinstance(predictors, (list, tuple)):
+                x = np.asarray(predictors, dtype=np.float64)
+            else:
+                x = predictors.copy()
             # Check and prepare predictor data
             # -- check if data types match across instantiated predictors and predictors
-            if not isinstance(predictors, self.predictors_type):
-                warnings.warn('Object type for predictors does not match the predictors object type '
-                              'instantiated with ConjugateBayesianLinearRegression. You can ignore this '
-                              'message with the posterior_predictive_distribution() method.')
-
-            if isinstance(predictors, (list, tuple)):
-                x = np.asarray(x)
+            if x.shape == self.predictors.shape:
+                if np.allclose(x, self.predictors):
+                    pass
+            else:
+                if not isinstance(x, self.predictors_type):
+                    raise TypeError('Object type for predictors does not match the predictors object type '
+                                    'instantiated with ConjugateBayesianLinearRegression.')
 
             # -- if Pandas type, grab index and column names
-            if isinstance(predictors, (pd.Series, pd.DataFrame)):
-                if not isinstance(predictors.index, type(self.response_index)):
+            if isinstance(x, (pd.Series, pd.DataFrame)):
+                if not isinstance(x.index, type(self.response_index)):
                     warnings.warn('Index type for predictors does not match the predictors index type '
                                   'instantiated with ConjugateBayesianLinearRegression.')
 
-                if isinstance(predictors, pd.Series):
-                    predictors_names = [predictors.name]
+                if isinstance(x, pd.Series):
+                    predictors_names = [x.name]
                 else:
-                    predictors_names = predictors.columns.values.tolist()
+                    predictors_names = x.columns.values.tolist()
 
-                if len(predictors_names) != self.num_coeff:
-                    raise ValueError(
-                        f'The number of predictors used for historical estimation {self.num_coeff} '
-                        f'does not match the number of predictors specified for forecasting '
-                        f'{len(predictors_names)}. The same set of predictors must be used.')
-                else:
-                    if not all(self.predictors_names[i] == predictors_names[i]
-                               for i in range(self.num_coeff)):
-                        raise ValueError('The order and names of the columns in predictors must match '
-                                         'the order and names in the predictors array instantiated '
-                                         'with the ConjugateBayesianLinearRegression class.')
+                if not all(self.predictors_names[i] == predictors_names[i]
+                           for i in range(self.num_coeff)):
+                    warnings.warn('The order and/or names of the columns in predictors do not match '
+                                  'the order and names in the predictors array instantiated '
+                                  'with the ConjugateBayesianLinearRegression class.')
 
                 x = x.to_numpy()
 
@@ -483,7 +492,6 @@ class ConjugateBayesianLinearRegression:
             if np.isinf(x).any():
                 raise ValueError('The predictors array cannot have Inf and/or -Inf values.')
 
-            # Final sanity checks
             if x.shape[1] != self.num_coeff:
                 raise ValueError("The number of columns in predictors must match the "
                                  "number of columns in the predictor/design matrix "
