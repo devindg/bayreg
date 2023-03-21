@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import warnings
-from scipy.stats import multivariate_t, invgamma
+from scipy.stats import multivariate_t, invgamma, multivariate_normal
 from linear_algebra.array_checks import is_symmetric, is_positive_definite
 from linear_algebra.array_operations import mat_inv
 from linear_algebra.vectorized import vec_norm
@@ -14,6 +14,7 @@ class Posterior(NamedTuple):
     num_post_samp: int
     post_coeff_mean: np.ndarray
     post_coeff_cov: np.ndarray
+    ninvg_post_coeff_cov: np.ndarray
     post_coeff: np.ndarray
     post_err_var_shape: float
     post_err_var_scale: float
@@ -373,7 +374,7 @@ class ConjugateBayesianLinearRegression:
                                     scale=post_err_var_scale,
                                     size=(num_post_samp, 1))
 
-        # Marginal posterior distribution for coefficients
+        # Joint posterior distribution for coefficients and variance parameter
         post_coeff_cov = post_err_var_scale / post_err_var_shape * (Vt @ ninvg_post_coeff_cov @ Vt.T)
 
         # Check if the covariance matrix corresponding to the coefficients' marginal
@@ -385,10 +386,12 @@ class ConjugateBayesianLinearRegression:
                              "response, or both to eliminate the possibility of an "
                              "ill-conditioned matrix.")
 
-        post_coeff = multivariate_t(df=2 * post_err_var_shape,
-                                    loc=Vt @ post_coeff_mean.flatten(),
-                                    shape=post_coeff_cov,
-                                    allow_singular=True).rvs(num_post_samp)
+        post_coeff = np.empty((num_post_samp, self.num_coeff))
+        for s in range(num_post_samp):
+            cond_post_coeff_cov = post_err_var[s] * (Vt @ ninvg_post_coeff_cov @ Vt.T)
+            post_coeff[s] = multivariate_normal(mean=Vt @ post_coeff_mean.flatten(),
+                                                cov=cond_post_coeff_cov,
+                                                allow_singular=True).rvs(1)
 
         # This will happen if the number of observations is 1
         if post_coeff.ndim == 1:
@@ -400,34 +403,12 @@ class ConjugateBayesianLinearRegression:
 
         self.posterior = Posterior(num_post_samp=num_post_samp,
                                    post_coeff_cov=post_coeff_cov,
+                                   ninvg_post_coeff_cov=ninvg_post_coeff_cov,
                                    post_coeff_mean=post_coeff_mean,
                                    post_coeff=post_coeff,
                                    post_err_var_shape=post_err_var_shape,
                                    post_err_var_scale=post_err_var_scale,
                                    post_err_var=post_err_var)
-
-        # # Computations without SVD
-        # ninvg_post_coeff_prec = x.T @ x + prior_coeff_prec
-        # ninvg_post_coeff_cov = mat_inv(ninvg_post_coeff_prec)
-        # post_coeff_mean = np.linalg.solve(ninvg_post_coeff_prec, x.T @ y + prior_coeff_prec @ prior_coeff_mean)
-        # post_err_var_shape = prior_err_var_shape + 0.5 * n
-        # post_err_var_scale = (prior_err_var_scale +
-        #                       0.5 * (y.T @ y
-        #                              + prior_coeff_mean.T @ prior_coeff_prec @ prior_coeff_mean
-        #                              - post_coeff_mean.T @ ninvg_post_coeff_prec @ post_coeff_mean))[0][0]
-        #
-        # # Marginal posterior distribution for variance parameter
-        # post_err_var = invgamma.rvs(post_err_var_shape,
-        #                             scale=post_err_var_scale,
-        #                             size=(num_post_samp, 1))
-        #
-        # # Marginal posterior distribution for coefficients
-        # post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
-        #
-        # post_coeff = multivariate_t(df=2 * post_err_var_shape,
-        #                             loc=post_coeff_mean.flatten(),
-        #                             shape=post_coeff_cov,
-        #                             allow_singular=True).rvs(num_post_samp)
 
         return self.posterior
 
@@ -509,20 +490,21 @@ class ConjugateBayesianLinearRegression:
         # beta_mean = self.posterior.post_coeff_mean
         # alpha = self.posterior.post_err_var_shape
         # tau = self.posterior.post_err_var_scale
-        # beta_cov = self.posterior.post_coeff_cov
+        # ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
         #
-        # V = tau / alpha * (np.eye(n) + x @ beta_cov @ x.T)
+        # V = tau / alpha * (np.eye(n) + x @ ninvg_post_coeff_cov @ x.T)
         # M = x @ beta_mean
-        # post_pred_dist = multivariate_t(df=2 * alpha,
-        #                                 loc=M.flatten(),
-        #                                 shape=V).rvs(S)
+        # posterior_prediction = multivariate_t(df=2 * alpha,
+        #                                       loc=M.flatten(),
+        #                                       shape=V).rvs(self.posterior.num_post_samp)
 
         posterior_prediction = np.empty((self.posterior.num_post_samp, n))
-
+        ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
+        V = 1 + np.array([x.T @ ninvg_post_coeff_cov @ x for x in predictors])
         if not mean_only:
             for s in range(self.posterior.num_post_samp):
                 posterior_prediction[s, :] = vec_norm(x @ self.posterior.post_coeff[s],
-                                                      np.sqrt(self.posterior.post_err_var[s]))
+                                                      np.sqrt(self.posterior.post_err_var[s] * V))
         else:
             posterior_prediction = x @ self.posterior.post_coeff_mean
 
