@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import warnings
-from scipy.stats import multivariate_t, invgamma, multivariate_normal
+from scipy.stats import multivariate_t, invgamma, multivariate_normal, t
 from linear_algebra.array_checks import is_symmetric, is_positive_definite
 from linear_algebra.array_operations import mat_inv
 from linear_algebra.vectorized import vec_norm
@@ -418,7 +418,7 @@ class ConjugateBayesianLinearRegression:
         """
 
         :param predictors:
-        :param mean_only: 
+        :param mean_only:
         :return:
         """
 
@@ -484,30 +484,32 @@ class ConjugateBayesianLinearRegression:
         self._posterior_exists_check()
         n = predictors.shape[0]
 
-        # # Closed-form posterior predictive distribution.
-        # # Sampling from this distribution is computationally
-        # # expensive due to the n x n matrix V.
-        # beta_mean = self.posterior.post_coeff_mean
-        # alpha = self.posterior.post_err_var_shape
-        # tau = self.posterior.post_err_var_scale
-        # ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
-        #
-        # V = tau / alpha * (np.eye(n) + x @ ninvg_post_coeff_cov @ x.T)
-        # M = x @ beta_mean
-        # posterior_prediction = multivariate_t(df=2 * alpha,
-        #                                       loc=M.flatten(),
-        #                                       shape=V).rvs(self.posterior.num_post_samp)
-
-        posterior_prediction = np.empty((self.posterior.num_post_samp, n))
+        # Marginal posterior predictive distribution
+        post_coeff_mean = self.posterior.post_coeff_mean
+        post_err_var_shape = self.posterior.post_err_var_shape
+        post_err_var_scale = self.posterior.post_err_var_scale
         ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
-        V = 1 + np.array([x.T @ ninvg_post_coeff_cov @ x for x in predictors])
-        if not mean_only:
-            for s in range(self.posterior.num_post_samp):
-                posterior_prediction[s, :] = vec_norm(x @ self.posterior.post_coeff[s],
-                                                      np.sqrt(self.posterior.post_err_var[s] * V))
-        else:
-            posterior_prediction = x @ self.posterior.post_coeff_mean
 
+        V = (post_err_var_scale / post_err_var_shape
+             * (1 + np.array([x.T @ ninvg_post_coeff_cov @ x for x in predictors])))
+        response_mean = x @ post_coeff_mean
+
+        if not mean_only:
+            posterior_prediction = t.rvs(df=2 * post_err_var_shape,
+                                         loc=response_mean.flatten(),
+                                         scale=V ** 0.5,
+                                         size=(self.posterior.num_post_samp, n))
+        else:
+            posterior_prediction = response_mean
+
+        # posterior_prediction = np.empty((self.posterior.num_post_samp, n))
+        # if not mean_only:
+        #     for s in range(self.posterior.num_post_samp):
+        #         posterior_prediction[s, :] = vec_norm(x @ self.posterior.post_coeff[s],
+        #                                               np.sqrt(self.posterior.post_err_var[s]))
+        # else:
+        #     posterior_prediction = x @ self.posterior.post_coeff_mean
+        #
         return posterior_prediction
 
     def posterior_predictive_distribution(self):
