@@ -1,12 +1,10 @@
 import numpy as np
 import pandas as pd
 import warnings
-from scipy.stats import multivariate_t, invgamma, multivariate_normal, t
+from scipy.stats import invgamma, multivariate_normal, t
 from linear_algebra.array_checks import is_symmetric, is_positive_definite
 from linear_algebra.array_operations import mat_inv
-from linear_algebra.vectorized import vec_norm
 from model_assessment.performance import watanabe_akaike, mean_squared_prediction_error, r_squared
-from numba import njit
 from typing import Union, NamedTuple
 
 
@@ -27,11 +25,6 @@ class Prior(NamedTuple):
     prior_err_var_shape: Union[int, float]
     prior_err_var_scale: Union[int, float]
     zellner_prior_obs: Union[int, float]
-
-
-@njit
-def _set_numba_seed(value):
-    np.random.seed(value)
 
 
 class ConjugateBayesianLinearRegression:
@@ -158,7 +151,7 @@ class ConjugateBayesianLinearRegression:
 
             # -- get predictor names if a Pandas object
             if isinstance(pred, (pd.Series, pd.DataFrame)):
-                if not (pred.index == response.index).all():
+                if not np.all(pred.index == response.index):
                     raise ValueError('The response and predictors indexes must match.')
 
                 if isinstance(pred, pd.Series):
@@ -191,8 +184,10 @@ class ConjugateBayesianLinearRegression:
         diag_pred_offset_squared = np.diag(pred_offset.T @ pred_offset)
         if np.any(diag_pred_offset_squared == 0):
             self.has_constant = True
+
             if np.sum(diag_pred_offset_squared == 0) > 1 and self.num_obs > 1:
                 raise ValueError('More than one column is a constant value. Only one column can be constant.')
+
             self.constant_index = np.argwhere(diag_pred_offset_squared == 0)[0][0]
         else:
             self.has_constant = False
@@ -214,7 +209,6 @@ class ConjugateBayesianLinearRegression:
                 raise TypeError('seed must be an integer.')
             if not 0 < seed < 2 ** 32 - 1:
                 raise ValueError('seed must be an integer between 0 and 2**32 - 1.')
-            _set_numba_seed(seed)  # for Numba JIT functions
             np.random.seed(seed)
 
         self.prior = None

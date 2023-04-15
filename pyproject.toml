@@ -5,15 +5,14 @@ description = ""
 authors = ["devindg <devindg@outlook.com>"]
 readme = "README.md"
 packages = [{include = "bayes_reg"}]
-keywords = ["bayesian", "regression", "conjugate"]
+keywords = ["bayesian", "regression", "conjugate", "linear"]
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.11"
 scipy = "^1.10.0"
 scikit-learn = "^1.2.1"
 numpy = "^1.23.5"
-pandas = "^1.5.3"
-numba = "^0.56.4"
+pandas = "^2.0.0"
 
 
 [build-system]
