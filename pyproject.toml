@@ -1,8 +1,9 @@
 [tool.poetry]
 name = "bayreg"
-version = "0.1.0"
+version = "0.1.1"
 description = ""
-authors = ["devindg <devindg@outlook.com>"]
+authors = ["Devin D. Garcia"]
+license = "BSD 3-Clause"
 readme = "README.md"
 packages = [{include = "bayes_reg"}]
 keywords = ["bayesian", "regression", "conjugate", "linear"]
