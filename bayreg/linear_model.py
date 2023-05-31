@@ -485,7 +485,7 @@ class ConjugateBayesianLinearRegression:
         ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
 
         V = (post_err_var_scale / post_err_var_shape
-             * (1 + np.array([x.T @ ninvg_post_coeff_cov @ x for x in predictors])))
+             * (1 + np.array([z.T @ ninvg_post_coeff_cov @ z for z in x])))
         response_mean = x @ post_coeff_mean
 
         if not mean_only:
