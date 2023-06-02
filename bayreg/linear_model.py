@@ -179,16 +179,14 @@ class ConjugateBayesianLinearRegression:
                              'the number of observations in the response array.')
 
         # -- check if design matrix has a constant
-        pred_column_mean = np.mean(pred, axis=0)
-        pred_offset = pred - pred_column_mean[np.newaxis, :]
-        diag_pred_offset_squared = np.diag(pred_offset.T @ pred_offset)
-        if np.any(diag_pred_offset_squared == 0):
+        var_pred = np.var(pred, axis=0)
+        if np.any(var_pred == 0):
             self.has_constant = True
 
-            if np.sum(diag_pred_offset_squared == 0) > 1 and self.num_obs > 1:
+            if np.sum(var_pred == 0) > 1 and self.num_obs > 1:
                 raise ValueError('More than one column is a constant value. Only one column can be constant.')
 
-            self.constant_index = np.argwhere(diag_pred_offset_squared == 0)[0][0]
+            self.constant_index = np.argwhere(var_pred == 0)[0][0]
         else:
             self.has_constant = False
 
@@ -248,9 +246,17 @@ class ConjugateBayesianLinearRegression:
         """
 
         y, x, n, k = self.response, self.predictors, self.num_obs, self.num_coeff
-        _, s, Vt = np.linalg.svd(x, full_matrices=False)
-        S = np.diag(s)
-        XtX = Vt.T @ (S ** 2) @ Vt
+        if n >= k:
+            _, s, Vt = np.linalg.svd(x, full_matrices=False)
+            S = np.diag(s)
+            StS = S ** 2
+        else:
+            _, s, Vt = np.linalg.svd(x, full_matrices=True)
+            S = np.zeros((n, k))
+            S[:n, :n] = np.diag(s)
+            StS = S.T @ S
+
+        XtX = Vt.T @ StS @ Vt
 
         # Check shape prior for error variance
         if prior_err_var_shape is not None:
@@ -354,8 +360,8 @@ class ConjugateBayesianLinearRegression:
         # Note: storing the normal-inverse-gamma precision and covariance matrices
         # could cause memory problems if the coefficient vector has high dimension.
         # May want to reconsider temporary storage of these matrices.
-        ninvg_post_coeff_prec = Vt.T @ (S ** 2 + Vt @ prior_coeff_prec @ Vt.T) @ Vt
-        ninvg_post_coeff_cov = Vt.T @ mat_inv(S ** 2 + Vt @ prior_coeff_prec @ Vt.T) @ Vt
+        ninvg_post_coeff_prec = Vt.T @ (StS + Vt @ prior_coeff_prec @ Vt.T) @ Vt
+        ninvg_post_coeff_cov = Vt.T @ mat_inv(StS + Vt @ prior_coeff_prec @ Vt.T) @ Vt
         post_coeff_mean = ninvg_post_coeff_cov @ (x.T @ y + prior_coeff_prec @ prior_coeff_mean)
         post_err_var_shape = prior_err_var_shape + 0.5 * n
         post_err_var_scale = (prior_err_var_scale +
@@ -369,7 +375,9 @@ class ConjugateBayesianLinearRegression:
                                     size=(num_post_samp, 1))
 
         # Joint posterior distribution for coefficients and variance parameter
-        post_coeff_cov = post_err_var_scale / post_err_var_shape * (Vt @ ninvg_post_coeff_cov @ Vt.T)
+        svd_post_coeff_mean = Vt @ post_coeff_mean.flatten()
+        svd_ninvg_post_coeff_cov = Vt @ ninvg_post_coeff_cov @ Vt.T
+        post_coeff_cov = post_err_var_scale / post_err_var_shape * svd_ninvg_post_coeff_cov
 
         # Check if the covariance matrix corresponding to the coefficients' marginal
         # posterior distribution is ill-conditioned.
@@ -382,8 +390,8 @@ class ConjugateBayesianLinearRegression:
 
         post_coeff = np.empty((num_post_samp, self.num_coeff))
         for s in range(num_post_samp):
-            cond_post_coeff_cov = post_err_var[s] * (Vt @ ninvg_post_coeff_cov @ Vt.T)
-            post_coeff[s] = multivariate_normal(mean=Vt @ post_coeff_mean.flatten(),
+            cond_post_coeff_cov = post_err_var[s] * svd_ninvg_post_coeff_cov
+            post_coeff[s] = multivariate_normal(mean=svd_post_coeff_mean,
                                                 cov=cond_post_coeff_cov,
                                                 allow_singular=True).rvs(1)
 
