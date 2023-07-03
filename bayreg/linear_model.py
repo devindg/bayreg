@@ -180,11 +180,11 @@ class ConjugateBayesianLinearRegression:
 
         # -- check if design matrix has a constant
         sd_pred = np.std(pred, axis=0)
-        if np.any(sd_pred <= 1e-9):
+        if np.any(sd_pred <= 1e-6):
             self.has_constant = True
 
-            if np.sum(sd_pred <= 1e-9) > 1 and self.num_obs > 1:
-                warnings.warn('More than one column is a constant value.')
+            if np.sum(sd_pred <= 1e-6) > 1 and self.num_obs > 1:
+                raise ValueError('More than one column in the regression matrix cannot be constant.')
 
             self.constant_index = np.argwhere(sd_pred == 0)[0][0]
         else:
