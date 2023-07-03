@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bayreg"
-version = "0.1.2"
+version = "0.1.3"
 description = ""
 authors = ["Devin D. Garcia"]
 license = "BSD 3-Clause"

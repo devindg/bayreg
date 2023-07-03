@@ -179,14 +179,14 @@ class ConjugateBayesianLinearRegression:
                              'the number of observations in the response array.')
 
         # -- check if design matrix has a constant
-        var_pred = np.var(pred, axis=0)
-        if np.any(var_pred == 0):
+        sd_pred = np.std(pred, axis=0)
+        if np.any(sd_pred <= 1e-9):
             self.has_constant = True
 
-            if np.sum(var_pred == 0) > 1 and self.num_obs > 1:
-                raise ValueError('More than one column is a constant value. Only one column can be constant.')
+            if np.sum(sd_pred <= 1e-9) > 1 and self.num_obs > 1:
+                warnings.warn('More than one column is a constant value.')
 
-            self.constant_index = np.argwhere(var_pred == 0)[0][0]
+            self.constant_index = np.argwhere(sd_pred == 0)[0][0]
         else:
             self.has_constant = False
 
