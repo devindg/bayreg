@@ -2,7 +2,7 @@ import numpy as np
 from scipy.stats import t as t_dist
 from numpy.linalg import svd
 from typing import NamedTuple
-from linear_algebra.array_operations import mat_inv
+from bayreg.linear_algebra.array_operations import mat_inv
 
 
 class Outliers(NamedTuple):

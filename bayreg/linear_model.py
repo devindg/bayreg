@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 import warnings
 from scipy.stats import invgamma, multivariate_normal, t
-from linear_algebra.array_checks import is_symmetric, is_positive_definite
-from linear_algebra.array_operations import mat_inv
-from model_assessment.performance import watanabe_akaike, mean_squared_prediction_error, r_squared
+from bayreg.linear_algebra.array_checks import is_symmetric, is_positive_definite
+from bayreg.linear_algebra.array_operations import mat_inv
+from bayreg.model_assessment.performance import watanabe_akaike, mean_squared_prediction_error, r_squared
 from typing import Union, NamedTuple
 
 
@@ -368,6 +368,12 @@ class ConjugateBayesianLinearRegression:
                               0.5 * (y.T @ y
                                      + prior_coeff_mean.T @ prior_coeff_prec @ prior_coeff_mean
                                      - post_coeff_mean.T @ ninvg_post_coeff_prec @ post_coeff_mean))[0][0]
+
+        if post_err_var_scale < 0:
+            post_err_var_scale = (prior_err_var_scale +
+                                  0.5 * ((y - x @ prior_coeff_mean).T
+                                         @ mat_inv(np.eye(n) + x @ prior_coeff_cov @ x.T)
+                                         @ (y - x @ prior_coeff_mean)))[0][0]
 
         # Marginal posterior distribution for variance parameter
         post_err_var = invgamma.rvs(post_err_var_shape,
