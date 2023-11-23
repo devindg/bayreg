@@ -12,10 +12,10 @@ class MSPE(NamedTuple):
 
 
 class WAIC(NamedTuple):
+    pointwise_waic: np.ndarray
     waic: np.ndarray
     eff_num_params: np.ndarray
     post_var_lppd: np.ndarray
-
 
 def pointwise_loglike_norm(response, response_mean, error_variance):
     error_std = np.sqrt(error_variance)
@@ -84,6 +84,7 @@ def watanabe_akaike(response, post_resp_mean, post_err_var):
     log_ppd = np.sum(log_ppd_i)
     p_waic_i = np.var(log_prob, axis=0, ddof=1)
     eff_num_params = np.sum(p_waic_i)
+    pointwise_waic = -2. * (log_ppd_i - p_waic_i)
     waic = -2. * (log_ppd - eff_num_params)
 
     if np.any(p_waic_i > 0.4):
@@ -95,7 +96,10 @@ def watanabe_akaike(response, post_resp_mean, post_err_var):
                       f"indicate that WAIC is failing as an approximation to LOO-CV. "
                       f"A more robust approach, such as K-fold CV, is recommended.")
 
-    return WAIC(waic=waic, eff_num_params=eff_num_params, post_var_lppd=p_waic_i)
+    return WAIC(pointwise_waic=pointwise_waic,
+                waic=waic,
+                eff_num_params=eff_num_params,
+                post_var_lppd=p_waic_i)
 
 
 def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
