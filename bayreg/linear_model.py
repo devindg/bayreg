@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import warnings
-from scipy.stats import invgamma, multivariate_normal, t
+from scipy.stats import invgamma, t
 from bayreg.linear_algebra.array_checks import is_symmetric, is_positive_definite
 from bayreg.linear_algebra.array_operations import mat_inv
 from bayreg.model_assessment.performance import watanabe_akaike, mean_squared_prediction_error, r_squared
@@ -207,7 +207,7 @@ class ConjugateBayesianLinearRegression:
                 raise TypeError('seed must be an integer.')
             if not 0 < seed < 2 ** 32 - 1:
                 raise ValueError('seed must be an integer between 0 and 2**32 - 1.')
-            np.random.seed(seed)
+            self.seed = seed
 
         self.prior = None
         self.posterior = None
@@ -265,7 +265,7 @@ class ConjugateBayesianLinearRegression:
             else:
                 raise ValueError('prior_err_var_shape must be a strictly positive integer or float.')
         else:
-            prior_err_var_shape = 1e-6
+            prior_err_var_shape = 1e-3
 
         # Check scale prior for error variance
         if prior_err_var_scale is not None:
@@ -274,7 +274,7 @@ class ConjugateBayesianLinearRegression:
             else:
                 raise ValueError('prior_err_var_scale must be a strictly positive integer or float.')
         else:
-            prior_err_var_scale = 1e-6
+            prior_err_var_scale = 1e-3
 
         # Check prior mean for regression coefficients
         if prior_coeff_mean is not None:
@@ -378,7 +378,8 @@ class ConjugateBayesianLinearRegression:
         # Marginal posterior distribution for variance parameter
         post_err_var = invgamma.rvs(post_err_var_shape,
                                     scale=post_err_var_scale,
-                                    size=(num_post_samp, 1))
+                                    size=(num_post_samp, 1),
+                                    random_state=self.seed)
 
         # Joint posterior distribution for coefficients and variance parameter
         svd_post_coeff_mean = Vt @ post_coeff_mean.flatten()
@@ -395,11 +396,13 @@ class ConjugateBayesianLinearRegression:
                              "ill-conditioned matrix.")
 
         post_coeff = np.empty((num_post_samp, self.num_coeff))
+        rng = np.random.default_rng(self.seed)
         for s in range(num_post_samp):
-            cond_post_coeff_cov = post_err_var[s] * svd_ninvg_post_coeff_cov
-            post_coeff[s] = multivariate_normal(mean=svd_post_coeff_mean,
-                                                cov=cond_post_coeff_cov,
-                                                allow_singular=True).rvs(1)
+            cond_post_coeff_cov = post_err_var[s][0] * svd_ninvg_post_coeff_cov
+            post_coeff[s] = rng.multivariate_normal(
+                mean=svd_post_coeff_mean,
+                cov=cond_post_coeff_cov
+            )
 
         # This will happen if the number of observations is 1
         if post_coeff.ndim == 1:
@@ -407,7 +410,7 @@ class ConjugateBayesianLinearRegression:
 
         # Back-transform parameters from SVD to original scale
         post_coeff_cov = Vt.T @ post_coeff_cov @ Vt
-        post_coeff = post_coeff @ Vt  # Same as (Vt.T @ post_coeff.T).T
+        post_coeff = post_coeff @ Vt
 
         self.posterior = Posterior(num_post_samp=num_post_samp,
                                    post_coeff_cov=post_coeff_cov,
@@ -506,7 +509,9 @@ class ConjugateBayesianLinearRegression:
             posterior_prediction = t.rvs(df=2 * post_err_var_shape,
                                          loc=response_mean.flatten(),
                                          scale=V ** 0.5,
-                                         size=(self.posterior.num_post_samp, n))
+                                         size=(self.posterior.num_post_samp, n),
+                                         random_state=self.seed
+                                         )
         else:
             posterior_prediction = response_mean
 
