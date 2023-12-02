@@ -246,6 +246,7 @@ class ConjugateBayesianLinearRegression:
         """
 
         y, x, n, k = self.response, self.predictors, self.num_obs, self.num_coeff
+        sd_y = np.std(y, ddof=1)
         if n >= k:
             _, s, Vt = np.linalg.svd(x, full_matrices=False)
             S = np.diag(s)
@@ -265,7 +266,7 @@ class ConjugateBayesianLinearRegression:
             else:
                 raise ValueError('prior_err_var_shape must be a strictly positive integer or float.')
         else:
-            prior_err_var_shape = 1e-3
+            prior_err_var_shape = 0.01
 
         # Check scale prior for error variance
         if prior_err_var_scale is not None:
@@ -274,7 +275,10 @@ class ConjugateBayesianLinearRegression:
             else:
                 raise ValueError('prior_err_var_scale must be a strictly positive integer or float.')
         else:
-            prior_err_var_scale = 1e-3
+            if np.isnan(sd_y):
+                prior_err_var_scale = 0.01
+            else:
+                prior_err_var_scale = (0.01 * sd_y) ** 2
 
         # Check prior mean for regression coefficients
         if prior_coeff_mean is not None:
