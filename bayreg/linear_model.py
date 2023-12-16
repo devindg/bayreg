@@ -2,9 +2,13 @@ import numpy as np
 import pandas as pd
 import warnings
 from scipy.stats import invgamma, t
-from bayreg.linear_algebra.array_checks import is_symmetric, is_positive_definite
-from bayreg.linear_algebra.array_operations import mat_inv
-from bayreg.model_assessment.performance import watanabe_akaike, mean_squared_prediction_error, r_squared
+from linear_algebra.array_checks import is_symmetric, is_positive_definite
+from linear_algebra.array_operations import mat_inv
+from model_assessment.performance import (watanabe_akaike,
+                                          mean_squared_prediction_error,
+                                          r_squared,
+                                          r_squared_classic,
+                                          general_cv_mse)
 from typing import Union, NamedTuple
 
 
@@ -612,3 +616,20 @@ class ConjugateBayesianLinearRegression:
 
         return r_squared(post_pred_dist=self.post_pred_dist,
                          post_err_var=self.posterior.post_err_var)
+
+    def r_sqr_classic(self):
+        self._posterior_exists_check()
+        mean_prediction = self.predictors @ self.posterior.post_coeff_mean
+
+        return r_squared_classic(response=self.response,
+                                 mean_prediction=mean_prediction)
+
+    def gcv(self):
+        self._posterior_exists_check()
+        prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
+        predictors = self.predictors
+        post_err_var = self.posterior.post_err_var
+
+        return general_cv_mse(post_err_var=post_err_var,
+                              predictors=predictors,
+                              prior_coeff_prec=prior_coeff_prec)

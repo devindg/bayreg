@@ -1,8 +1,9 @@
 import numpy as np
 from scipy.special import logsumexp
-from typing import Union, NamedTuple
+from typing import NamedTuple
 import warnings
 from scipy.stats import norm
+from model_assessment.residual_diagnostics import get_projection_matrix_diagonal
 
 
 class MSPE(NamedTuple):
@@ -16,6 +17,7 @@ class WAIC(NamedTuple):
     waic: np.ndarray
     eff_num_params: np.ndarray
     post_var_lppd: np.ndarray
+
 
 def pointwise_loglike_norm(response, response_mean, error_variance):
     error_std = np.sqrt(error_variance)
@@ -117,3 +119,18 @@ def r_squared(post_pred_dist, post_err_var):
     r2 = predicted_variance / (predicted_variance + post_err_var.flatten())
 
     return r2
+
+
+def r_squared_classic(response, mean_prediction):
+    explained_variance = np.var(mean_prediction.flatten())
+    r2 = explained_variance / np.var(response.flatten())
+
+    return r2
+
+
+def general_cv_mse(post_err_var, predictors, prior_coeff_prec):
+    n = predictors.shape[0]
+    proj_diag = get_projection_matrix_diagonal(predictors, prior_coeff_prec)[0]
+    trace_proj_diag = np.sum(proj_diag.flatten())
+
+    return post_err_var / (1 - trace_proj_diag / n) ** 2
