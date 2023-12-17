@@ -3,7 +3,7 @@ from scipy.special import logsumexp
 from typing import NamedTuple
 import warnings
 from scipy.stats import norm
-from model_assessment.residual_diagnostics import get_projection_matrix_diagonal
+from bayreg.model_assessment.residual_diagnostics import get_projection_matrix_diagonal
 
 
 class MSPE(NamedTuple):

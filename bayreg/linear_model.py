@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 import warnings
 from scipy.stats import invgamma, t
-from linear_algebra.array_checks import is_symmetric, is_positive_definite
-from linear_algebra.array_operations import mat_inv
-from model_assessment.performance import (watanabe_akaike,
+from bayreg.linear_algebra.array_checks import is_symmetric, is_positive_definite
+from bayreg.linear_algebra.array_operations import mat_inv
+from bayreg.model_assessment.performance import (watanabe_akaike,
                                           mean_squared_prediction_error,
                                           r_squared,
                                           r_squared_classic,
