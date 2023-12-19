@@ -128,9 +128,11 @@ def r_squared_classic(response, mean_prediction):
     return r2
 
 
-def general_cv_mse(post_err_var, predictors, prior_coeff_prec):
-    n = predictors.shape[0]
-    proj_diag = get_projection_matrix_diagonal(predictors, prior_coeff_prec)[0]
-    trace_proj_diag = np.sum(proj_diag.flatten())
+def general_cv_mse(post_pred_dist, response, predictors, prior_coeff_prec):
+    # PRESS statistic (predicted residual error sum of squares)
+    resp = response.copy().flatten()
+    proj_diag = get_projection_matrix_diagonal(predictors, prior_coeff_prec)[0].flatten()
+    resid = resp[np.newaxis, :] - post_pred_dist
+    press = np.mean((resid / (1 - proj_diag)[np.newaxis, :]) ** 2, axis=1)
 
-    return post_err_var / (1 - trace_proj_diag / n) ** 2
+    return press
