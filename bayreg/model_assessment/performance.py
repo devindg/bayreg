@@ -19,12 +19,17 @@ class WAIC(NamedTuple):
     post_var_lppd: np.ndarray
 
 
+class PRESS(NamedTuple):
+    press: float
+    pointwise_press: np.ndarray
+
+
 def pointwise_loglike_norm(response, response_mean, error_variance):
     error_std = np.sqrt(error_variance)
     return norm.logpdf(response, loc=response_mean, scale=error_std)
 
 
-def watanabe_akaike(response, post_resp_mean, post_err_var):
+def watanabe_akaike(response, post_resp_mean, post_err_var) -> WAIC:
     """
     Source: Understanding predictive information criteria for Bayesian models
             Gelman, Hwang, and Vehtari (2013)
@@ -78,30 +83,32 @@ def watanabe_akaike(response, post_resp_mean, post_err_var):
     # Number of observations and posterior samples
     n, S = response.size, post_err_var.size
 
-    log_prob = pointwise_loglike_norm(response,
-                                      post_resp_mean,
-                                      post_err_var)
+    log_prob = pointwise_loglike_norm(response, post_resp_mean, post_err_var)
 
-    log_ppd_i = logsumexp(log_prob, axis=0, b=1 / S)
+    log_ppd_i = logsumexp(log_prob, axis=0, b=1 / S, return_sign=False)
     log_ppd = np.sum(log_ppd_i)
     p_waic_i = np.var(log_prob, axis=0, ddof=1)
     eff_num_params = np.sum(p_waic_i)
-    pointwise_waic = -2. * (log_ppd_i - p_waic_i)
-    waic = -2. * (log_ppd - eff_num_params)
+    waic_i = -2 * (log_ppd_i - p_waic_i)
+    waic = -2.0 * (log_ppd - eff_num_params)
 
     if np.any(p_waic_i > 0.4):
         large_p_waic = (p_waic_i > 0.4) * 1
         num_large_p_waic = np.sum(large_p_waic)
         pct_large_p_waic = round((num_large_p_waic / n) * 100, 3)
-        warnings.warn(f"Some of the posterior variances of the log predictive density "
-                      f"exceed 0.4 ({pct_large_p_waic}%, {num_large_p_waic}). This may "
-                      f"indicate that WAIC is failing as an approximation to LOO-CV. "
-                      f"A more robust approach, such as K-fold CV, is recommended.")
+        warnings.warn(
+            f"Some of the posterior variances of the log predictive density "
+            f"exceed 0.4 ({pct_large_p_waic}%, {num_large_p_waic}). This may "
+            f"indicate that WAIC is failing as an approximation to LOO-CV. "
+            f"A more robust approach, such as K-fold CV, may be appropriate."
+        )
 
-    return WAIC(pointwise_waic=pointwise_waic,
-                waic=waic,
-                eff_num_params=eff_num_params,
-                post_var_lppd=p_waic_i)
+    return WAIC(
+        waic=waic,
+        eff_num_params=eff_num_params,
+        post_var_lppd=p_waic_i,
+        pointwise_waic=waic_i,
+    )
 
 
 def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
@@ -115,8 +122,8 @@ def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
 
 def r_squared(post_pred_dist, post_err_var):
     n = post_pred_dist.shape[1]
-    predicted_variance = np.var(post_pred_dist, axis=1, ddof=min(1, n - 1))
-    r2 = predicted_variance / (predicted_variance + post_err_var.flatten())
+    explained_variance = np.var(post_pred_dist, axis=1, ddof=min(1, n - 1))
+    r2 = explained_variance / (explained_variance + post_err_var.flatten())
 
     return r2
 
@@ -128,11 +135,15 @@ def r_squared_classic(response, mean_prediction):
     return r2
 
 
-def general_cv_mse(post_pred_dist, response, predictors, prior_coeff_prec):
+def general_cv_mse(response, predictors, mean_coeff, prior_coeff_prec):
     # PRESS statistic (predicted residual error sum of squares)
     resp = response.copy().flatten()
-    proj_diag = get_projection_matrix_diagonal(predictors, prior_coeff_prec)[0].flatten()
-    resid = resp[np.newaxis, :] - post_pred_dist
-    press = np.mean((resid / (1 - proj_diag)[np.newaxis, :]) ** 2, axis=1)
+    proj_diag = get_projection_matrix_diagonal(predictors, prior_coeff_prec)[
+        0
+    ].flatten()
+    mean_prediction = predictors @ mean_coeff
+    resid = resp - mean_prediction.flatten()
+    pointwise_press = (resid / (1 - proj_diag)) ** 2
+    press = np.mean(pointwise_press)
 
-    return press
+    return PRESS(press, pointwise_press)

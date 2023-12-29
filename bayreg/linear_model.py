@@ -626,15 +626,15 @@ class ConjugateBayesianLinearRegression:
 
     def gcv(self):
         self._posterior_exists_check()
-        self._post_pred_dist_exists_check()
 
-        ppd = self.post_pred_dist
         response = self.response
         predictors = self.predictors
         prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
+        post_coeff_mean = self.posterior.post_coeff_mean
 
-        return general_cv_mse(response=response,
-                              post_pred_dist=ppd,
-                              predictors=predictors,
-                              prior_coeff_prec=prior_coeff_prec
-                              )
+        return general_cv_mse(
+            response=response,
+            predictors=predictors,
+            mean_coeff=post_coeff_mean,
+            prior_coeff_prec=prior_coeff_prec
+        )
