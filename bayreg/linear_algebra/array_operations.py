@@ -31,3 +31,18 @@ def mat_inv(z):
         return 1. / z
     else:
         return np.linalg.solve(z, np.eye(dim))
+
+
+def svd(x):
+    n, k = x.shape
+
+    # Get SVD of design matrix
+    if n >= k:
+        U, s, Vt = np.linalg.svd(x, full_matrices=False)
+        S = np.diag(s)
+    else:
+        U, s, Vt = np.linalg.svd(x, full_matrices=True)
+        S = np.zeros((n, k))
+        S[:n, :n] = np.diag(s)
+
+    return U, S, Vt

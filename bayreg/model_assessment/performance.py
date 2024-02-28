@@ -1,9 +1,11 @@
+import warnings
+from typing import NamedTuple
 import numpy as np
 from scipy.special import logsumexp
-from typing import NamedTuple
-import warnings
 from scipy.stats import norm
-from bayreg.model_assessment.residual_diagnostics import get_projection_matrix_diagonal
+from bayreg.model_assessment.residual_diagnostics import (
+    get_projection_matrix_diagonal,
+)
 
 
 class MSPE(NamedTuple):
@@ -13,10 +15,10 @@ class MSPE(NamedTuple):
 
 
 class WAIC(NamedTuple):
-    pointwise_waic: np.ndarray
     waic: np.ndarray
     eff_num_params: np.ndarray
     post_var_lppd: np.ndarray
+    pointwise_waic: np.ndarray
 
 
 class PRESS(NamedTuple):
@@ -115,7 +117,7 @@ def mean_squared_prediction_error(response, post_pred_dist, post_err_var):
     prediction_mean = np.mean(post_pred_dist, axis=0)
     prediction_variance = np.mean((post_pred_dist - prediction_mean) ** 2, axis=1)
     prediction_bias = np.mean(response.flatten() - prediction_mean)
-    mspe = prediction_variance + prediction_bias ** 2 + post_err_var.flatten()
+    mspe = prediction_variance + prediction_bias**2 + post_err_var.flatten()
 
     return MSPE(mspe, prediction_bias, prediction_variance)
 
@@ -137,12 +139,15 @@ def r_squared_classic(response, mean_prediction):
 
 def general_cv_mse(response, predictors, mean_coeff, prior_coeff_prec):
     # PRESS statistic (predicted residual error sum of squares)
-    resp = response.copy().flatten()
-    proj_diag = get_projection_matrix_diagonal(predictors, prior_coeff_prec)[
-        0
-    ].flatten()
-    mean_prediction = predictors @ mean_coeff
-    resid = resp - mean_prediction.flatten()
+    y = response.copy().flatten()
+    x = predictors
+    proj_diag = (
+        get_projection_matrix_diagonal
+        (x, prior_coeff_prec)[0]
+        .flatten()
+    )
+    mean_prediction = x @ mean_coeff
+    resid = y - mean_prediction.flatten()
     pointwise_press = (resid / (1 - proj_diag)) ** 2
     press = np.mean(pointwise_press)
 
