@@ -14,6 +14,26 @@ from bayreg.model_assessment.performance import (
 )
 
 
+def drop_constant_cols(regress_design_matrix: np.ndarray):
+    # Check if design matrix has more than one constant. If so, drop redundant columns.
+    x = regress_design_matrix
+    num_obs, num_pred = x.shape
+    const_x = np.all(x == x[0, :], axis=0)
+    if np.sum(const_x) > 1 and num_obs > 1:
+        valid_cols = []
+        for j in range(num_pred):
+            if np.all(x[:, j] == 1) or not const_x[j]:
+                valid_cols.append(j)
+
+        x_new = x[:, valid_cols]
+
+        return x_new, valid_cols
+    else:
+        valid_cols = [j for j in range(num_pred)]
+
+        return x, valid_cols
+
+
 class Posterior(NamedTuple):
     num_post_samp: int
     post_coeff_mean: np.ndarray
@@ -77,10 +97,10 @@ class ConjugateBayesianLinearRegression:
     """
 
     def __init__(
-        self,
-        response: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
-        predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
-        seed: int = None,
+            self,
+            response: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
+            predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
+            seed: int = None,
     ):
         """
 
@@ -142,7 +162,7 @@ class ConjugateBayesianLinearRegression:
 
         # CHECK AND PREPARE PREDICTORS DATA
         if not isinstance(
-            predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
+                predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
         ):
             raise TypeError(
                 "The predictors array must be a Numpy array, list, tuple, Pandas Series, \n"
@@ -156,7 +176,7 @@ class ConjugateBayesianLinearRegression:
 
             # -- check if response and predictors are same data type.
             if isinstance(response, (np.ndarray, list, tuple)) and not isinstance(
-                pred, (np.ndarray, list, tuple)
+                    pred, (np.ndarray, list, tuple)
             ):
                 raise TypeError(
                     "The response array provided is a NumPy array, list, or tuple, but the predictors "
@@ -164,7 +184,7 @@ class ConjugateBayesianLinearRegression:
                 )
 
             if isinstance(response, (pd.Series, pd.DataFrame)) and not isinstance(
-                pred, (pd.Series, pd.DataFrame)
+                    pred, (pd.Series, pd.DataFrame)
             ):
                 raise TypeError(
                     "The response array provided is a Pandas Series/DataFrame, but the predictors "
@@ -228,7 +248,7 @@ class ConjugateBayesianLinearRegression:
         if seed is not None:
             if not isinstance(seed, int):
                 raise TypeError("seed must be an integer.")
-            if not 0 < seed < 2**32 - 1:
+            if not 0 < seed < 2 ** 32 - 1:
                 raise ValueError("seed must be an integer between 0 and 2**32 - 1.")
             self.seed = seed
 
@@ -255,13 +275,13 @@ class ConjugateBayesianLinearRegression:
         return
 
     def fit(
-        self,
-        num_post_samp: int = 1000,
-        prior_coeff_mean: Union[list, tuple, np.ndarray] = None,
-        prior_coeff_cov: Union[list, tuple, np.ndarray] = None,
-        prior_err_var_shape: Union[int, float] = None,
-        prior_err_var_scale: Union[int, float] = None,
-        zellner_g: Union[int, float] = None,
+            self,
+            num_post_samp: int = 1000,
+            prior_coeff_mean: Union[list, tuple, np.ndarray] = None,
+            prior_coeff_cov: Union[list, tuple, np.ndarray] = None,
+            prior_err_var_shape: Union[int, float] = None,
+            prior_err_var_scale: Union[int, float] = None,
+            zellner_g: Union[int, float] = None,
     ):
         """
 
@@ -280,8 +300,8 @@ class ConjugateBayesianLinearRegression:
         # Check shape prior for error variance
         if prior_err_var_shape is not None:
             if (
-                isinstance(prior_err_var_shape, (int, float))
-                and prior_err_var_shape > 0
+                    isinstance(prior_err_var_shape, (int, float))
+                    and prior_err_var_shape > 0
             ):
                 pass
             else:
@@ -294,8 +314,8 @@ class ConjugateBayesianLinearRegression:
         # Check scale prior for error variance
         if prior_err_var_scale is not None:
             if (
-                isinstance(prior_err_var_scale, (int, float))
-                and prior_err_var_scale > 0
+                    isinstance(prior_err_var_scale, (int, float))
+                    and prior_err_var_scale > 0
             ):
                 pass
             else:
@@ -309,32 +329,21 @@ class ConjugateBayesianLinearRegression:
                 prior_err_var_scale = (0.01 * sd_y) ** 2
 
         # Check if design matrix has more than one constant. If so, drop redundant columns.
-        sd_x = np.std(x, axis=0)
-        if np.sum(sd_x <= 1e-6) > 1 and self.num_obs > 1:
+        x, valid_cols = drop_constant_cols(x)
+        if x.shape[1] != self.num_coeff:
             warnings.warn(
                 "More than one column in the design matrix cannot be constant. "
                 "All constant predictors will be dropped except the intercept, if "
                 "applicable. Priors for the coefficient mean and covariance will be "
                 "adjusted accordingly."
             )
-            valid_cols = []
-            for j in range(k):
-                if j == self.constant_index:
-                    pass
-                else:
-                    if sd_x[j] > 1e-6:
-                        valid_cols.append(j)
-
-            x = x.copy()[:, valid_cols]
-            k = x.shape[1]
             self.predictors = x
-            self.predictors_names = [p
-                                     for i, p in enumerate(self.predictors_names)
-                                     if i in valid_cols
-                                     ]
-            self.num_coeff = k
-        else:
-            valid_cols = [j for j in range(self.num_coeff)]
+            self.num_coeff = x.shape[1]
+            self.predictors_names = [
+                p
+                for i, p in enumerate(self.predictors_names)
+                if i in valid_cols
+            ]
 
         # Get SVD of design matrix
         U, S, Vt = svd(x)
@@ -431,7 +440,7 @@ class ConjugateBayesianLinearRegression:
 
             w = 0.5
             prior_coeff_prec = (
-                1 / zellner_g * (w * XtX + (1 - w) * np.diag(np.diag(XtX)))
+                    1 / zellner_g * (w * XtX + (1 - w) * np.diag(np.diag(XtX)))
             )
             prior_coeff_cov = mat_inv(prior_coeff_prec)
 
@@ -452,28 +461,28 @@ class ConjugateBayesianLinearRegression:
         ninvg_post_coeff_prec = Vt.T @ (StS + Vt @ prior_coeff_prec @ Vt.T) @ Vt
         ninvg_post_coeff_cov = Vt.T @ mat_inv(StS + Vt @ prior_coeff_prec @ Vt.T) @ Vt
         post_coeff_mean = ninvg_post_coeff_cov @ (
-            x.T @ y + prior_coeff_prec @ prior_coeff_mean
+                x.T @ y + prior_coeff_prec @ prior_coeff_mean
         )
         post_err_var_shape = prior_err_var_shape + 0.5 * n
         post_err_var_scale = (
-            prior_err_var_scale
-            + 0.5
-            * (
-                y.T @ y
-                + prior_coeff_mean.T @ prior_coeff_prec @ prior_coeff_mean
-                - post_coeff_mean.T @ ninvg_post_coeff_prec @ post_coeff_mean
-            )
+                prior_err_var_scale
+                + 0.5
+                * (
+                        y.T @ y
+                        + prior_coeff_mean.T @ prior_coeff_prec @ prior_coeff_mean
+                        - post_coeff_mean.T @ ninvg_post_coeff_prec @ post_coeff_mean
+                )
         )[0][0]
 
         if post_err_var_scale < 0:
             post_err_var_scale = (
-                prior_err_var_scale
-                + 0.5
-                * (
-                    (y - x @ prior_coeff_mean).T
-                    @ mat_inv(np.eye(n) + x @ prior_coeff_cov @ x.T)
-                    @ (y - x @ prior_coeff_mean)
-                )
+                    prior_err_var_scale
+                    + 0.5
+                    * (
+                            (y - x @ prior_coeff_mean).T
+                            @ mat_inv(np.eye(n) + x @ prior_coeff_cov @ x.T)
+                            @ (y - x @ prior_coeff_mean)
+                    )
             )[0][0]
 
         # Marginal posterior distribution for variance parameter
@@ -488,7 +497,7 @@ class ConjugateBayesianLinearRegression:
         svd_post_coeff_mean = Vt @ post_coeff_mean.flatten()
         svd_ninvg_post_coeff_cov = Vt @ ninvg_post_coeff_cov @ Vt.T
         post_coeff_cov = (
-            post_err_var_scale / post_err_var_shape * svd_ninvg_post_coeff_cov
+                post_err_var_scale / post_err_var_shape * svd_ninvg_post_coeff_cov
         )
 
         # Check if the covariance matrix corresponding to the coefficients' marginal
@@ -532,9 +541,9 @@ class ConjugateBayesianLinearRegression:
         return self.posterior
 
     def predict(
-        self,
-        predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
-        mean_only: bool = False,
+            self,
+            predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
+            mean_only: bool = False,
     ):
         """
 
@@ -545,7 +554,7 @@ class ConjugateBayesianLinearRegression:
 
         # -- check if object type is valid
         if not isinstance(
-            predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
+                predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
         ):
             raise TypeError(
                 "The predictors array must be a NumPy array, list, tuple, Pandas Series, \n"
@@ -582,8 +591,8 @@ class ConjugateBayesianLinearRegression:
                     predictors_names = x.columns.values.tolist()
 
                 if not all(
-                    self.predictors_names[i] == predictors_names[i]
-                    for i in range(self.num_coeff)
+                        self.predictors_names[i] == predictors_names[i]
+                        for i in range(self.num_coeff)
                 ):
                     warnings.warn(
                         "The order and/or names of the columns in predictors do not match "
@@ -628,9 +637,9 @@ class ConjugateBayesianLinearRegression:
         ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
 
         V = (
-            post_err_var_scale
-            / post_err_var_shape
-            * (1 + np.array([z.T @ ninvg_post_coeff_cov @ z for z in x]))
+                post_err_var_scale
+                / post_err_var_shape
+                * (1 + np.array([z.T @ ninvg_post_coeff_cov @ z for z in x]))
         )
         response_mean = x @ post_coeff_mean
 
@@ -638,21 +647,13 @@ class ConjugateBayesianLinearRegression:
             posterior_prediction = t.rvs(
                 df=2 * post_err_var_shape,
                 loc=response_mean.flatten(),
-                scale=V**0.5,
+                scale=V ** 0.5,
                 size=(self.posterior.num_post_samp, n),
                 random_state=self.seed,
             )
         else:
             posterior_prediction = response_mean
 
-        # posterior_prediction = np.empty((self.posterior.num_post_samp, n))
-        # if not mean_only:
-        #     for s in range(self.posterior.num_post_samp):
-        #         posterior_prediction[s, :] = vec_norm(x @ self.posterior.post_coeff[s],
-        #                                               np.sqrt(self.posterior.post_err_var[s]))
-        # else:
-        #     posterior_prediction = x @ self.posterior.post_coeff_mean
-        #
         return posterior_prediction
 
     def posterior_predictive_distribution(self):
@@ -679,7 +680,7 @@ class ConjugateBayesianLinearRegression:
         post_coeff_lb = np.quantile(post_coeff, lb, axis=0)
         post_coeff_ub = np.quantile(post_coeff, ub, axis=0)
         coeff_prob_pos_post = (
-            np.sum((post_coeff > 0) * 1, axis=0) / posterior.num_post_samp
+                np.sum((post_coeff > 0) * 1, axis=0) / posterior.num_post_samp
         )
 
         # Error variance
@@ -693,7 +694,7 @@ class ConjugateBayesianLinearRegression:
 
         if post_err_var_shape > 2:
             post_err_var_std = np.sqrt(
-                post_err_var_scale**2
+                post_err_var_scale ** 2
                 / ((post_err_var_shape - 1) ** 2 * (post_err_var_shape - 2))
             )
         else:
