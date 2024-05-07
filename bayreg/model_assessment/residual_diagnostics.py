@@ -14,7 +14,7 @@ class Outliers(NamedTuple):
 
 def get_projection_matrix_diagonal(predictors, prior_coeff_prec=None):
     n, k = predictors.shape
-    x = predictors
+    x = np.array(predictors)
 
     # Get SVD of design matrix
     U, S, Vt = svd(x)
@@ -119,9 +119,9 @@ def studentized_residuals(
     ext_stud_resid_pval = 1 - t_dist.cdf(abs(ext_stud_resid), df=n - p - 1)
 
     return Outliers(
-        int_stud_resid=int_stud_resid,
-        ext_stud_resid=ext_stud_resid,
-        ext_stud_resid_pval=ext_stud_resid_pval,
-        resid=resid,
+        int_stud_resid=int_stud_resid.flatten(),
+        ext_stud_resid=ext_stud_resid.flatten(),
+        ext_stud_resid_pval=ext_stud_resid_pval.flatten(),
+        resid=resid.flatten(),
         num_eff_params=p,
     )
