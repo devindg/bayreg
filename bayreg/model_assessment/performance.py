@@ -21,7 +21,7 @@ class WAIC(NamedTuple):
     pointwise_waic: np.ndarray
 
 
-class PRESS(NamedTuple):
+class OOS_Error(NamedTuple):
     press: float
     pointwise_press: np.ndarray
 
@@ -137,18 +137,23 @@ def r_squared_classic(response, mean_prediction):
     return r2
 
 
-def general_cv_mse(response, predictors, mean_coeff, prior_coeff_prec):
+def oos_error(response, predictors, mean_coeff, prior_coeff_prec, proj_mat_diag_adj=None):
     # PRESS statistic (predicted residual error sum of squares)
     y = response.copy().flatten()
     x = predictors
-    proj_diag = (
+
+    proj_mat_diag = (
         get_projection_matrix_diagonal
         (x, prior_coeff_prec)[0]
         .flatten()
     )
+
+    if proj_mat_diag_adj is None:
+        proj_mat_diag_adj = np.zeros_like(proj_mat_diag)
+
     mean_prediction = x @ mean_coeff
     resid = y - mean_prediction.flatten()
-    pointwise_press = (resid / (1 - proj_diag)) ** 2
+    pointwise_press = (resid / (1. - (proj_mat_diag + proj_mat_diag_adj))) ** 2
     press = np.mean(pointwise_press)
 
-    return PRESS(press, pointwise_press)
+    return OOS_Error(press, pointwise_press)

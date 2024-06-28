@@ -6,7 +6,7 @@ from scipy.stats import invgamma, t
 from bayreg.linear_algebra.array_checks import is_positive_definite, is_symmetric
 from bayreg.linear_algebra.array_operations import mat_inv, svd
 from bayreg.model_assessment.performance import (
-    general_cv_mse,
+    oos_error,
     mean_squared_prediction_error,
     r_squared,
     r_squared_classic,
@@ -759,7 +759,17 @@ class ConjugateBayesianLinearRegression:
             response=self.response, mean_prediction=mean_prediction
         )
 
-    def gcv(self):
+    def oos_error(self,
+                  proj_mat_diag_adj: Union[np.ndarray, None] = None
+                  ):
+        """
+
+        :param proj_mat_diag_adj: NumPy array or None. If a centered transformation is made
+        to the data, then OOS error metrics, like PRESS, will not be correct. To address,
+        an adjustment to the projection matrix/leverage diagonal can be applied by adding
+        1/(# observations) to the diagonal elements in a standard regression, or
+        1 /(# observations by member) in a fixed effects panel regression.
+        """
         self._posterior_exists_check()
 
         response = self.response
@@ -767,9 +777,10 @@ class ConjugateBayesianLinearRegression:
         prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
         post_coeff_mean = self.posterior.post_coeff_mean
 
-        return general_cv_mse(
+        return oos_error(
             response=response,
             predictors=predictors,
             mean_coeff=post_coeff_mean,
             prior_coeff_prec=prior_coeff_prec,
+            proj_mat_diag_adj=proj_mat_diag_adj
         )

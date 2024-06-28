@@ -96,7 +96,7 @@ def studentized_residuals(
     h, U, S, Vt, W = get_projection_matrix_diagonal(
         predictors=x, prior_coeff_prec=prior_coeff_prec
     )
-    p = sum(h)
+    p = np.sum(h)
 
     if prior_coeff_mean is None:
         b = Vt.T @ np.diag(np.diag(S) ** (-1)) @ U.T @ y

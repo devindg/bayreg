@@ -1,0 +1,685 @@
+import warnings
+from itertools import repeat
+from multiprocessing import Pool
+from typing import NamedTuple, Union
+from operator import itemgetter
+from threadpoolctl import ThreadpoolController
+import numpy as np
+import pandas as pd
+from bayreg.linear_model import ConjugateBayesianLinearRegression as CBLR
+from bayreg.linear_model import Prior, Posterior, drop_constant_cols
+from bayreg.model_assessment.performance import WAIC, OOS_Error
+from bayreg.model_assessment.residual_diagnostics import studentized_residuals as stud_resid
+from bayreg.model_assessment.residual_diagnostics import Outliers
+from bayreg.linear_algebra.array_operations import mat_inv
+from bayreg.transformations.data_utils import ProcessPanelRegressionData, PreparedPanelData
+
+thread_controller = ThreadpoolController()
+
+
+class UniqueIDLengthMismatch(Exception):
+    def __init__(self, arg):
+        self.message = f"""If {arg} has length greater than 0, 
+                        then its length must be equal to the number of 
+                        unique ID's present in the prepared dataset. 
+                        Note that raw data, in the form of a Pandas DataFrame, 
+                        should be passed to method PrepareData() before 
+                        any model fitting methods are used. Specifically, 
+                        the object returned from PrepareData() should be 
+                        passed to group_fit() and member_fit() as argument 
+                        'data_context'.
+                       """
+        super().__init__(self.message)
+
+
+class FitResults(NamedTuple):
+    fit: Posterior
+    prior: Prior
+    waic: WAIC
+    oos_error: OOS_Error
+    student_resid: Outliers
+    rmspe: float
+    r_sqr: float
+    r_sqr_classic: float
+    pred_vars: list
+
+
+class HierarchicalFit(NamedTuple):
+    member_fits: list
+    group_fit: FitResults
+
+
+class BayesianPanelRegression(ProcessPanelRegressionData):
+    def __init__(
+            self,
+            unique_id_var: str,
+            date_var: str,
+            dep_var: str,
+            predictor_vars: list,
+            transform: Union[str, None] = None,
+            make_dynamic: bool = False,
+            seed: Union[int, None] = None,
+    ):
+        super(BayesianPanelRegression, self).__init__(
+            unique_id_var=unique_id_var,
+            date_var=date_var,
+            dep_var=dep_var,
+            predictor_vars=predictor_vars,
+            transform=transform,
+            make_dynamic=make_dynamic
+        )
+
+        if seed is not None:
+            if isinstance(seed, int) and 0 < seed < 2 ** 32 - 1:
+                pass
+            else:
+                raise ValueError(
+                    "seed must be an integer between 0 and 2**32 - 1."
+                )
+            self.seed = seed
+
+    def _fit(
+            self,
+            response: Union[pd.Series, pd.DataFrame],
+            predictors: Union[pd.Series, pd.DataFrame],
+            num_post_samp: int,
+            prior_coeff_mean: Union[np.ndarray, list, tuple] = None,
+            prior_coeff_cov: Union[np.ndarray, list, tuple] = None,
+            prior_err_var_shape: Union[int, float] = None,
+            prior_err_var_scale: Union[int, float] = None,
+            zellner_g: Union[int, float] = None,
+            proj_mat_diag_adj=None
+    ) -> FitResults:
+        y = response.copy()
+        x = predictors.copy()
+
+        mod = CBLR(response=y, predictors=x, seed=self.seed)
+        with thread_controller.limit(limits=1, user_api="blas"):
+            fit = mod.fit(
+                num_post_samp=num_post_samp,
+                prior_coeff_mean=prior_coeff_mean,
+                prior_coeff_cov=prior_coeff_cov,
+                prior_err_var_shape=prior_err_var_shape,
+                prior_err_var_scale=prior_err_var_scale,
+                zellner_g=zellner_g,
+            )
+
+        prior = mod.prior
+        pred_vars = mod.predictors_names
+        mod.posterior_predictive_distribution()
+        student_resid = stud_resid(
+            response=mod.response,
+            predictors=mod.predictors,
+            prior_coeff_prec=mat_inv(prior.prior_coeff_cov),
+            prior_coeff_mean=prior.prior_coeff_mean
+        )
+        waic = mod.waic()
+        oos_error = mod.oos_error(proj_mat_diag_adj=proj_mat_diag_adj)
+        rmspe = np.sqrt(np.mean(mod.mspe().mean_squared_prediction_error))
+        r_sqr = np.mean(mod.r_sqr())
+        r_sqr_classic = np.mean(mod.r_sqr_classic())
+
+        return FitResults(
+            fit,
+            prior,
+            waic,
+            oos_error,
+            student_resid,
+            rmspe,
+            r_sqr,
+            r_sqr_classic,
+            pred_vars
+        )
+
+    def _predict(self,
+                 fit: FitResults,
+                 data: pd.DataFrame,
+                 ) -> np.ndarray:
+
+        b = fit.fit.post_coeff_mean
+        x = data[fit.pred_vars]
+        coeff_map = dict(zip(fit.pred_vars, b.flatten()))
+        num_rows = x.shape[0]
+
+        if self.dep_var_offset is not None:
+            offset = (data[self.dep_var_offset]
+                      .to_numpy()
+                      .reshape(-1, 1)
+                      )
+        else:
+            offset = np.zeros((num_rows, 1))
+
+        def dynamic_predict(dv_last_obs,
+                            dv_ar_coeff,
+                            iv_pred_design_mat,
+                            iv_pred_coeff):
+
+            # Need offset for lagged, centered DV when centering is used
+            dv_lag_offset = 0.
+            if self.transform == "center":
+                dv_lag_offset = (data[f"{self.dep_var_lag}"]
+                                 - data[f"{self.dep_var_lag}_"
+                                        f"{self._var_center_postfix}"]
+                                 )
+                dv_lag_offset = dv_lag_offset.iloc[0]
+
+            h = iv_pred_design_mat.shape[0]
+            pred = np.zeros(h)
+            dv_part = np.zeros(h)
+            iv_part = np.zeros(h)
+            iv_part[0] = iv_pred_design_mat[0, :] @ iv_pred_coeff
+            for r in range(1, h + 1):
+                dv_part[r - 1] = dv_ar_coeff ** r * dv_last_obs
+                if self.transform == "center":
+                    dv_part[r - 1] += (
+                            dv_ar_coeff
+                            * (1 - dv_ar_coeff ** (r - 1))
+                            / (1 - dv_ar_coeff ** r)
+                            * (offset[0] - dv_lag_offset)
+                    )
+                if r > 1:
+                    iv_part[r - 1] = (
+                            iv_pred_design_mat[r - 1, :] @ iv_pred_coeff
+                            + dv_ar_coeff * iv_part[r - 2]
+                    )
+
+                pred[r - 1] = dv_part[r - 1] + iv_part[r - 1]
+
+            if self.transform == "center":
+                pred = offset[0] + pred
+            elif self.transform == "difference":
+                dv_last_lvl_obs = data[(f"{self.dep_var}_"
+                                        f"{self._var_last_postfix}"
+                                        )].iloc[0]
+                pred = dv_last_lvl_obs + np.cumsum(pred)
+
+            return pred.reshape(-1, 1)
+
+        if self.transform in ("center", None) and not self.make_dynamic:
+            x = x.to_numpy()
+            prediction = x @ b + offset
+        elif self.transform is None and self.make_dynamic:
+            dv_lag_var = f"{self.dep_var_lag}"
+            dv_lag_coeff = coeff_map[dv_lag_var]
+            dv_last_var = f"{self.dep_var}_{self._var_last_postfix}"
+            dv_last = data[dv_last_var].iloc[0]
+            x_iv = x[[c for c in x.columns if c != dv_lag_var]].to_numpy()
+            x_iv_coeff = np.array([v for k, v in coeff_map.items()
+                                   if k != dv_lag_var]
+                                  )
+
+            prediction = dynamic_predict(
+                dv_last_obs=dv_last,
+                dv_ar_coeff=dv_lag_coeff,
+                iv_pred_design_mat=x_iv,
+                iv_pred_coeff=x_iv_coeff
+            )
+
+        elif self.transform == "center" and self.make_dynamic:
+            dv_lag_cent_var = (f"{self.dep_var_lag}_"
+                               f"{self._var_center_postfix}"
+                               )
+            dv_lag_cent_coeff = coeff_map[dv_lag_cent_var]
+            dv_last_cent_var = (f"{self.dep_var}_"
+                                f"{self._var_center_postfix}_"
+                                f"{self._var_last_postfix}"
+                                )
+            dv_last_cent = data[dv_last_cent_var].iloc[0]
+            x_iv = x[[c for c in x.columns if c != dv_lag_cent_var]].to_numpy()
+            x_iv_coeff = np.array([v for k, v in coeff_map.items()
+                                   if k != dv_lag_cent_var]
+                                  )
+
+            prediction = dynamic_predict(
+                dv_last_obs=dv_last_cent,
+                dv_ar_coeff=dv_lag_cent_coeff,
+                iv_pred_design_mat=x_iv,
+                iv_pred_coeff=x_iv_coeff
+            )
+
+        elif self.transform == "difference" and not self.make_dynamic:
+            x = x.to_numpy()
+            pred_diff = x @ b
+            dv_last_var = (f"{self.dep_var}_"
+                           f"{self._var_last_postfix}"
+                           )
+            dv_last = data[dv_last_var].iloc[0]
+            prediction = dv_last + np.cumsum(pred_diff)
+        else:
+            dv_lag_diff_var = (f"{self.dep_var_lag}_"
+                               f"{self._var_diff_postfix}"
+                               )
+            dv_lag_diff_coeff = coeff_map[(f"{self.dep_var_lag}_"
+                                           f"{self._var_diff_postfix}"
+                                           )]
+            dv_last_diff_var = (f"{self.dep_var}_"
+                                f"{self._var_diff_postfix}_"
+                                f"{self._var_last_postfix}"
+                                )
+            dv_last_diff = data[dv_last_diff_var].iloc[0]
+            x_iv = x[[c for c in x.columns if c != dv_lag_diff_var]].to_numpy()
+            x_iv_coeff = np.array([v for k, v in coeff_map.items()
+                                   if k != dv_lag_diff_var]
+                                  )
+
+            prediction = dynamic_predict(
+                dv_last_obs=dv_last_diff,
+                dv_ar_coeff=dv_lag_diff_coeff,
+                iv_pred_design_mat=x_iv,
+                iv_pred_coeff=x_iv_coeff
+            )
+
+        return prediction
+
+    def group_fit(
+            self,
+            data: PreparedPanelData,
+            num_post_samp: int,
+            prior_coeff_mean: Union[np.ndarray, list, tuple] = None,
+            prior_coeff_cov: Union[np.ndarray, list, tuple] = None,
+            prior_err_var_shape: Union[int, float] = None,
+            prior_err_var_scale: Union[int, float] = None,
+            zellner_g: Union[int, float] = None,
+    ) -> FitResults:
+
+        if data.data_type == "out-of-sample":
+            warnings.warn(
+                "PreparedPanelData object is tagged as out-of-sample "
+                "(see 'data_type' attribute). Ignore if the intention is "
+                "to fit a model on an out-of-sample set.")
+
+        if data.transform is None:
+            dep_var = data.dep_var
+            predictor_vars = data.predictor_vars
+        else:
+            transform_vars = data.transform_vars
+            dep_var = transform_vars[0]
+            predictor_vars = transform_vars[1:]
+
+        df = (pd.concat([j[1] for j in data.member_dfs])
+              .reset_index(drop=True)
+              )
+
+        y_grp = df[dep_var]
+        x_grp = df[predictor_vars]
+
+        # Centering affects the leverage matrix for the LOO CV calculation.
+        # An adjustment needs to be applied to the centered leverage matrix.
+        proj_mat_diag_adj = None
+        if self.transform == "center":
+            num_obs_by_grp = (
+                df
+                .groupby(self.unique_id_var)[self.unique_id_var]
+                .size()
+                .to_numpy()
+                .astype(int)
+            )
+            proj_mat_diag_adj = np.repeat(1. / num_obs_by_grp, num_obs_by_grp)
+
+        group_res = self._fit(
+            response=y_grp,
+            predictors=x_grp,
+            num_post_samp=num_post_samp,
+            prior_coeff_mean=prior_coeff_mean,
+            prior_coeff_cov=prior_coeff_cov,
+            prior_err_var_shape=prior_err_var_shape,
+            prior_err_var_scale=prior_err_var_scale,
+            zellner_g=zellner_g,
+            proj_mat_diag_adj=proj_mat_diag_adj,
+        )
+
+        return group_res
+
+    def member_fit(
+            self,
+            data: Union[PreparedPanelData, list],
+            num_post_samp: int,
+            prior_coeff_mean: list = None,
+            prior_coeff_cov: list = None,
+            prior_err_var_shape: list = None,
+            prior_err_var_scale: list = None,
+            zellner_g: list = None,
+    ) -> list:
+
+        if self.transform is None:
+            dep_var = self.dep_var
+            predictor_vars = self.predictor_vars
+        else:
+            transform_vars = self.transform_vars
+            dep_var = transform_vars[0]
+            predictor_vars = transform_vars[1:]
+
+        if isinstance(data, PreparedPanelData):
+            data = data.member_dfs
+
+        num_members = len(data)
+        mem_ids = [j[0] for j in data]
+        y_m = [j[1][dep_var] for j in data]
+        x_m = [j[1][[c for c in predictor_vars if c in j[1].columns]] for j in data]
+
+        # Centering affects the leverage matrix for the LOO CV calculation.
+        # An adjustment needs to be applied to the centered leverage matrix.
+        if self.transform == "center":
+            num_obs_m = [j[1].shape[0] for j in data]
+            proj_mat_diag_adj = [np.repeat(1. / n, n) for n in num_obs_m]
+        else:
+            proj_mat_diag_adj = repeat(None)
+
+        if prior_coeff_mean is not None:
+            if len(prior_coeff_mean) == 1:
+                prior_coeff_mean = repeat(prior_coeff_mean[0])
+            else:
+                if len(prior_coeff_mean) != num_members:
+                    raise UniqueIDLengthMismatch("prior_coeff_mean")
+        else:
+            prior_coeff_mean = repeat(prior_coeff_mean)
+
+        if prior_coeff_cov is not None:
+            if len(prior_coeff_cov) == 1:
+                prior_coeff_cov = repeat(prior_coeff_cov[0])
+            else:
+                if len(prior_coeff_cov) != num_members:
+                    raise UniqueIDLengthMismatch("prior_coeff_cov")
+        else:
+            prior_coeff_cov = repeat(prior_coeff_cov)
+
+        if prior_err_var_shape is not None:
+            if len(prior_err_var_shape) == 1:
+                prior_err_var_shape = repeat(prior_err_var_shape[0])
+            else:
+                if len(prior_err_var_shape) != num_members:
+                    raise UniqueIDLengthMismatch("prior_err_var_shape")
+        else:
+            prior_err_var_shape = repeat(prior_err_var_shape)
+
+        if prior_err_var_scale is not None:
+            if len(prior_err_var_scale) == 1:
+                prior_err_var_scale = repeat(prior_err_var_scale[0])
+            else:
+                if len(prior_err_var_scale) != num_members:
+                    raise UniqueIDLengthMismatch("prior_err_var_scale")
+        else:
+            prior_err_var_scale = repeat(prior_err_var_scale)
+
+        if zellner_g is not None:
+            if len(zellner_g) == 1:
+                zellner_g = repeat(zellner_g[0])
+            else:
+                if len(zellner_g) != num_members:
+                    raise UniqueIDLengthMismatch("zellner_g")
+        else:
+            zellner_g = repeat(zellner_g)
+
+        with Pool() as pool:
+            mem_res = pool.starmap(
+                self._fit,
+                zip(
+                    y_m,
+                    x_m,
+                    repeat(num_post_samp),
+                    prior_coeff_mean,
+                    prior_coeff_cov,
+                    prior_err_var_shape,
+                    prior_err_var_scale,
+                    zellner_g,
+                    proj_mat_diag_adj
+                ),
+            )
+            pool.close()
+            pool.join()
+
+        # Map each member's results to their ID
+        mem_res = [(g, mem_res[i])
+                   for i, g in enumerate(mem_ids)
+                   ]
+
+        return mem_res
+
+    def hierarchical_fit(
+            self,
+            data: Union[pd.DataFrame, PreparedPanelData],
+            group_num_post_samp: int = 500,
+            member_num_post_samp: int = 500,
+            group_prior_coeff_mean: Union[np.ndarray, list, tuple] = None,
+            group_prior_coeff_cov: Union[np.ndarray, list, tuple] = None,
+            group_zellner_g: Union[int, float] = None,
+            group_prior_err_var_shape: Union[int, float] = None,
+            group_prior_err_var_scale: Union[int, float] = None,
+            group_posterior_confidence: str = "medium",
+    ) -> HierarchicalFit:
+        if not isinstance(data, (pd.DataFrame, PreparedPanelData)):
+            raise TypeError(
+                "data must be a Pandas Dataframe or a PreparedPanelData object."
+            )
+
+        if group_posterior_confidence not in ("low", "medium", "high"):
+            raise ValueError(
+                "group_posterior_confidence takes 'low', 'medium', and 'high' "
+                "as acceptable values."
+            )
+
+        if isinstance(data, pd.DataFrame):
+            data = self.prepare_data(data)
+
+        if data.data_type == "out-of-sample":
+            warnings.warn(
+                "PreparedPanelData object is tagged as out-of-sample "
+                "(see 'data_type' attribute). Ignore if the intention is "
+                "to fit a model on an out-of-sample set."
+            )
+
+        if data.transform is not None:
+            dep_var = data.transform_vars[0]
+            pred_vars = data.transform_vars[1:]
+        else:
+            dep_var = data.dep_var
+            pred_vars = data.predictor_vars
+
+        num_pred_vars = len(pred_vars)
+        mem_num_obs = [j[1].shape[0] for j in data.member_dfs]
+        grp_num_obs = sum(mem_num_obs)
+
+        if group_zellner_g is None:
+            group_zellner_g = max([grp_num_obs, num_pred_vars ** 2])
+
+        grp_res = self.group_fit(
+            data=data,
+            num_post_samp=group_num_post_samp,
+            prior_coeff_mean=group_prior_coeff_mean,
+            prior_coeff_cov=group_prior_coeff_cov,
+            zellner_g=group_zellner_g,
+            prior_err_var_shape=group_prior_err_var_shape,
+            prior_err_var_scale=group_prior_err_var_scale,
+        )
+
+        # Retrieve the group-level, coefficient posterior mean and covariance matrix
+        grp_fit = grp_res.fit
+        grp_post_coeff_mean = grp_fit.post_coeff_mean
+        grp_post_coeff_cov_diag = np.diag(np.diag(grp_fit.post_coeff_cov))
+
+        def shrinkage_factors(cov_mat):
+            grp_r_sqr = grp_res.r_sqr
+            grp_post_err_var = grp_fit.post_err_var_scale / grp_fit.post_err_var_shape
+            num_pred = cov_mat.shape[0]
+            # Grab trace of the posterior covariance matrix.
+            # This will be used to scale the covariance matrix.
+
+            # De-scale the covariance matrix by dividing out the
+            # posterior variance of the error term. This is done
+            # before taking the trace and determinant to help avoid
+            # issues with numerical overflow. The posterior variance
+            # will be re-introduced later.
+            trace_grp_post_coeff_cov = np.trace(cov_mat / grp_post_err_var)
+
+            # Re-introduce posterior variance.
+            tr = trace_grp_post_coeff_cov / num_pred * grp_post_err_var
+
+            # Shrinkage factors based on group posterior confidence
+            g_h = 0.2 * (1 / tr
+                         * (1 - grp_r_sqr) / grp_r_sqr)
+            g_m = (1 / tr
+                   * (1 - grp_r_sqr) / grp_r_sqr)
+            g_l = 25. * (1 / tr
+                         * (1 - grp_r_sqr) / grp_r_sqr)
+
+            # The trace and/or the determinant of the covariance matrix
+            # can be a very large number, resulting in shrinkage factors
+            # that are excessive. If a shrinkage factor exceeds
+            # the group-level posterior error variance, then fall back
+            # to the inverse of the posterior variance.
+            if 1 / (g_h * grp_post_err_var) > 1:
+                g_h = 1 / grp_post_err_var
+
+            if 1 / (g_m * grp_post_err_var) > 1:
+                g_m = 1 / grp_post_err_var
+
+            if 1 / (g_l * grp_post_err_var) > 1:
+                g_l = 1 / grp_post_err_var
+
+            return g_h, g_m, g_l
+
+        """
+        Get shrinkage factors for each member in the group.
+        Shrinkage is based on the group-level posterior
+        coefficient covariance matrix. Because the group level
+        regression is pooled, it's possible that some member's
+        in the group could have predictors without variation.
+        For example, Member 1 one might have values [1, 2, 3]
+        for predictor X, but Member 2 might have values [0, 0, 0]
+        or [3, 3, 3] (note that [1, 1, 1] is valid as that
+        represents an intercept).
+
+        For members that have predictors without variation,
+        their shrinkage factor will be based on a slice of
+        the group-level covariance matrix. For example, if the 
+        covariance matrix is
+        
+                        1 0 0
+                        0 5 0
+                        0 0 8
+                        
+        and a member has no variation for predictor 2, then 
+        shrinkage will be based on the sliced covariance matrix
+        
+                        1 0
+                        0 8
+                        
+        That is, the 2nd row and 2nd column are deleted from 
+        the full covariance matrix.
+        """
+
+        mem_ids = [j[0] for j in data.member_dfs]
+        dfs = [j[1].copy() for j in data.member_dfs]
+        mem_prior_coeff_mean = []
+        mem_prior_coeff_cov = []
+        new_dfs = []
+        for k, df_m in enumerate(dfs):
+            x_m = df_m[pred_vars]
+            x_m_new, valid_cols = drop_constant_cols(x_m.to_numpy())
+            n_m, k_m = x_m_new.shape
+            new_df = x_m.iloc[:, valid_cols].copy()
+            new_df[dep_var] = df_m[dep_var]
+            new_dfs.append(new_df)
+
+            if k_m != num_pred_vars:
+                cov = grp_post_coeff_cov_diag[
+                    np.ix_(valid_cols, valid_cols)
+                ]
+            else:
+                cov = grp_post_coeff_cov_diag
+
+            g_high, g_medium, g_low = shrinkage_factors(cov)
+
+            if n_m <= 1.25 * k_m:
+                (mem_prior_coeff_cov
+                 .append(g_low * cov)
+                 )
+            else:
+                if group_posterior_confidence == "high":
+                    (mem_prior_coeff_cov
+                     .append(g_high * cov)
+                     )
+                elif group_posterior_confidence == "medium":
+                    (mem_prior_coeff_cov
+                     .append(g_medium * cov)
+                     )
+                else:
+                    (mem_prior_coeff_cov
+                     .append(g_low * cov)
+                     )
+
+            mem_prior_coeff_mean.append(grp_post_coeff_mean[valid_cols, :])
+
+        new_data = list(zip(mem_ids, new_dfs))
+        mem_res = self.member_fit(
+            data=new_data,
+            num_post_samp=member_num_post_samp,
+            prior_coeff_mean=mem_prior_coeff_mean,
+            prior_coeff_cov=mem_prior_coeff_cov,
+            prior_err_var_shape=None,
+            prior_err_var_scale=None,
+            zellner_g=None,
+        )
+
+        return HierarchicalFit(mem_res, grp_res)
+
+    def predict(self,
+                fit: list,
+                data: PreparedPanelData,
+                ) -> tuple:
+
+        # Reconstruct member_fit and predictor_data based on matching keys.
+        mem_fit_keys = [j[0] for j in fit]
+        mem_data_keys = [j[0] for j in data.member_dfs]
+        matching_keys = [k for k in mem_fit_keys if k in mem_data_keys]
+
+        if len(matching_keys) == 0:
+            raise ValueError(
+                "No keys match between mem_fit and predictor_data objects."
+            )
+
+        # Record non-matching keys.
+        non_matching_keys = {
+            "exclusive_fit_keys": [k for k in mem_fit_keys
+                                   if k not in mem_data_keys],
+            "exclusive_predictor_data_keys": [k for k in mem_data_keys
+                                              if k not in mem_fit_keys],
+        }
+
+        # Align fit and data across member keys
+        mem_fit = sorted([j for j in fit
+                          if j[0] in matching_keys],
+                         key=itemgetter(0))
+
+        mem_data = sorted(
+            [j for j in data.member_dfs
+             if j[0] in matching_keys],
+            key=itemgetter(0)
+        )
+
+        # Get dataframes and fits for each member
+        dfs = [j[1] for j in mem_data]
+        fits = [j[1] for j in mem_fit]
+
+        # Get predictions
+        with Pool() as pool:
+            predictions = pool.starmap(
+                self._predict,
+                zip(fits, dfs),
+            )
+
+        # Collect results into a dataframe
+        num_members = len(mem_fit)
+        panel_date = [mem_data[i][1][[self.unique_id_var, self.date_var]]
+                      for i in range(num_members)
+                      ]
+
+        predictions_df = []
+        for i, p in enumerate(predictions):
+            df = panel_date[i].copy()
+            df["PREDICTION"] = p
+            predictions_df.append(df)
+
+        predictions_df = pd.concat(predictions_df).reset_index(drop=True)
+
+        return predictions_df, non_matching_keys
