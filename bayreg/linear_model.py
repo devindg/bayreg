@@ -18,7 +18,7 @@ def drop_constant_cols(regress_design_matrix: np.ndarray):
     # Check if design matrix has more than one constant. If so, drop redundant columns.
     x = regress_design_matrix
     num_obs, num_pred = x.shape
-    const_x = np.all(x - x[0, :] <= 1e-9, axis=0)
+    const_x = np.all(abs(x - x[0, :]) <= 1e-9, axis=0)
     if np.sum(const_x) > 1 and num_obs > 1:
         valid_cols = []
         for j in range(num_pred):
