@@ -14,15 +14,15 @@ from bayreg.model_assessment.performance import (
 )
 
 
-def drop_constant_cols(regress_design_matrix: np.ndarray):
+def drop_zero_cols(regress_design_matrix: np.ndarray):
     # Check if design matrix has more than one constant. If so, drop redundant columns.
     x = regress_design_matrix
     num_obs, num_pred = x.shape
-    const_x = np.all(abs(x - x[0, :]) <= 1e-9, axis=0)
-    if np.sum(const_x) > 1 and num_obs > 1:
+    zero_x = np.all(abs(x) <= 1e-9, axis=0)
+    if np.sum(zero_x) > 1:
         valid_cols = []
         for j in range(num_pred):
-            if np.all(x[:, j] == 1) or not const_x[j]:
+            if not zero_x[j]:
                 valid_cols.append(j)
 
         x_new = x[:, valid_cols]
@@ -329,13 +329,13 @@ class ConjugateBayesianLinearRegression:
                 prior_err_var_scale = (0.01 * sd_y) ** 2
 
         # Check if design matrix has more than one constant. If so, drop redundant columns.
-        x, valid_cols = drop_constant_cols(x)
+        x, valid_cols = drop_zero_cols(x)
         if x.shape[1] != self.num_coeff:
             warnings.warn(
-                "More than one column in the design matrix cannot be constant. "
-                "All constant predictors will be dropped except the intercept, if "
-                "applicable. Priors for the coefficient mean and covariance will be "
-                "adjusted accordingly."
+                "No column in the design matrix can be all zeros. "
+                "All-zero columns will be dropped. Priors for the "
+                "coefficient mean and covariance will be adjusted "
+                "accordingly."
             )
             self.predictors = x
             self.num_coeff = x.shape[1]

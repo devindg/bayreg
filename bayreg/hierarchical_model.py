@@ -7,7 +7,7 @@ from threadpoolctl import ThreadpoolController
 import numpy as np
 import pandas as pd
 from bayreg.linear_model import ConjugateBayesianLinearRegression as CBLR
-from bayreg.linear_model import Prior, Posterior, drop_constant_cols
+from bayreg.linear_model import Prior, Posterior, drop_zero_cols
 from bayreg.model_assessment.performance import WAIC, OOS_Error
 from bayreg.model_assessment.residual_diagnostics import studentized_residuals as stud_resid
 from bayreg.model_assessment.residual_diagnostics import Outliers
@@ -553,17 +553,17 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         their shrinkage factor will be based on a slice of
         the group-level covariance matrix. For example, if the 
         covariance matrix is
-        
+
                         1 0 0
                         0 5 0
                         0 0 8
-                        
+
         and a member has no variation for predictor 2, then 
         shrinkage will be based on the sliced covariance matrix
-        
+
                         1 0
                         0 8
-                        
+
         That is, the 2nd row and 2nd column are deleted from 
         the full covariance matrix.
         """
@@ -575,7 +575,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         new_dfs = []
         for k, df_m in enumerate(dfs):
             x_m = df_m[pred_vars]
-            x_m_new, valid_cols = drop_constant_cols(x_m.to_numpy())
+            x_m_new, valid_cols = drop_zero_cols(x_m.to_numpy())
             n_m, k_m = x_m_new.shape
             new_df = x_m.iloc[:, valid_cols].copy()
             new_df[dep_var] = df_m[dep_var]

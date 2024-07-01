@@ -61,7 +61,7 @@ def studentized_residuals(
     elif x.ndim == 1:
         x = x.reshape(-1, 1)
     else:
-        if 1 in x.shape:
+        if 1 in x.shape and y.shape[0] > 1:
             x = x.reshape(-1, 1)
 
     n, m, k = y.shape[0], y.shape[1], x.shape[1]
