@@ -628,23 +628,23 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
             g_high, g_medium, g_low = shrinkage_factors(cov)
 
-            if n_m <= 1.25 * k_m:
+            # if n_m <= 1.25 * k_m:
+            #     (mem_prior_coeff_cov
+            #      .append(g_low * cov)
+            #      )
+            # else:
+            if group_posterior_confidence == "high":
+                (mem_prior_coeff_cov
+                 .append(g_high * cov)
+                 )
+            elif group_posterior_confidence == "medium":
+                (mem_prior_coeff_cov
+                 .append(g_medium * cov)
+                 )
+            else:
                 (mem_prior_coeff_cov
                  .append(g_low * cov)
                  )
-            else:
-                if group_posterior_confidence == "high":
-                    (mem_prior_coeff_cov
-                     .append(g_high * cov)
-                     )
-                elif group_posterior_confidence == "medium":
-                    (mem_prior_coeff_cov
-                     .append(g_medium * cov)
-                     )
-                else:
-                    (mem_prior_coeff_cov
-                     .append(g_low * cov)
-                     )
 
             mem_prior_coeff_mean.append(grp_post_coeff_mean[valid_cols, :])
 
