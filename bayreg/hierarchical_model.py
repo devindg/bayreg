@@ -1,5 +1,6 @@
 import warnings
 from itertools import repeat
+from typing import Literal
 from multiprocessing import Pool
 from typing import NamedTuple, Union
 from operator import itemgetter
@@ -56,7 +57,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             date_var: str,
             dep_var: str,
             predictor_vars: list,
-            transform: Union[str, None] = None,
+            transform: Union[Literal["center", "difference"], None] = None,
             make_dynamic: bool = False,
             seed: Union[int, None] = None,
     ):
@@ -77,6 +78,8 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                     "seed must be an integer between 0 and 2**32 - 1."
                 )
             self.seed = seed
+        else:
+            self.seed = 123
 
     def _fit(
             self,
@@ -156,7 +159,13 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
     def _predict(self,
                  fit: FitResults,
                  data: pd.DataFrame,
+                 prediction_type: Literal["standard", "forecast"]
                  ) -> np.ndarray:
+
+        if prediction_type not in ("standard", "forecast"):
+            raise ValueError(
+                "prediction_type must be either 'standard' or 'forecast'"
+            )
 
         b = fit.fit.post_coeff_mean
         x = data[fit.pred_vars]
@@ -171,10 +180,10 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         else:
             offset = np.zeros((num_rows, 1))
 
-        def dynamic_predict(dv_last_obs,
-                            dv_ar_coeff,
-                            iv_pred_design_mat,
-                            iv_pred_coeff):
+        def dynamic_forecast(dv_last_obs,
+                             dv_ar_coeff,
+                             iv_pred_design_mat,
+                             iv_pred_coeff):
 
             # Need offset for lagged, centered DV when centering is used
             dv_lag_offset = 0.
@@ -217,79 +226,83 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
             return pred.reshape(-1, 1)
 
-        if self.transform in ("center", None) and not self.make_dynamic:
+        if prediction_type == "standard":
             x = x.to_numpy()
             prediction = x @ b + offset
-        elif self.transform is None and self.make_dynamic:
-            dv_lag_var = f"{self.dep_var_lag}"
-            dv_lag_coeff = coeff_map[dv_lag_var]
-            dv_last_var = f"{self.dep_var}_{self._var_last_postfix}"
-            dv_last = data[dv_last_var].iloc[0]
-            x_iv = x[[c for c in x.columns if c != dv_lag_var]].to_numpy()
-            x_iv_coeff = np.array([v for k, v in coeff_map.items()
-                                   if k != dv_lag_var]
-                                  )
-
-            prediction = dynamic_predict(
-                dv_last_obs=dv_last,
-                dv_ar_coeff=dv_lag_coeff,
-                iv_pred_design_mat=x_iv,
-                iv_pred_coeff=x_iv_coeff
-            )
-
-        elif self.transform == "center" and self.make_dynamic:
-            dv_lag_cent_var = (f"{self.dep_var_lag}_"
-                               f"{self._var_center_postfix}"
-                               )
-            dv_lag_cent_coeff = coeff_map[dv_lag_cent_var]
-            dv_last_cent_var = (f"{self.dep_var}_"
-                                f"{self._var_center_postfix}_"
-                                f"{self._var_last_postfix}"
-                                )
-            dv_last_cent = data[dv_last_cent_var].iloc[0]
-            x_iv = x[[c for c in x.columns if c != dv_lag_cent_var]].to_numpy()
-            x_iv_coeff = np.array([v for k, v in coeff_map.items()
-                                   if k != dv_lag_cent_var]
-                                  )
-
-            prediction = dynamic_predict(
-                dv_last_obs=dv_last_cent,
-                dv_ar_coeff=dv_lag_cent_coeff,
-                iv_pred_design_mat=x_iv,
-                iv_pred_coeff=x_iv_coeff
-            )
-
-        elif self.transform == "difference" and not self.make_dynamic:
-            x = x.to_numpy()
-            pred_diff = x @ b
-            dv_last_var = (f"{self.dep_var}_"
-                           f"{self._var_last_postfix}"
-                           )
-            dv_last = data[dv_last_var].iloc[0]
-            prediction = dv_last + np.cumsum(pred_diff)
         else:
-            dv_lag_diff_var = (f"{self.dep_var_lag}_"
-                               f"{self._var_diff_postfix}"
-                               )
-            dv_lag_diff_coeff = coeff_map[(f"{self.dep_var_lag}_"
-                                           f"{self._var_diff_postfix}"
-                                           )]
-            dv_last_diff_var = (f"{self.dep_var}_"
-                                f"{self._var_diff_postfix}_"
-                                f"{self._var_last_postfix}"
-                                )
-            dv_last_diff = data[dv_last_diff_var].iloc[0]
-            x_iv = x[[c for c in x.columns if c != dv_lag_diff_var]].to_numpy()
-            x_iv_coeff = np.array([v for k, v in coeff_map.items()
-                                   if k != dv_lag_diff_var]
-                                  )
+            if self.transform in ("center", None) and not self.make_dynamic:
+                x = x.to_numpy()
+                prediction = x @ b + offset
+            elif self.transform is None and self.make_dynamic:
+                dv_lag_var = f"{self.dep_var_lag}"
+                dv_lag_coeff = coeff_map[dv_lag_var]
+                dv_last_var = f"{self.dep_var}_{self._var_last_postfix}"
+                dv_last = data[dv_last_var].iloc[0]
+                x_iv = x[[c for c in x.columns if c != dv_lag_var]].to_numpy()
+                x_iv_coeff = np.array([v for k, v in coeff_map.items()
+                                       if k != dv_lag_var]
+                                      )
 
-            prediction = dynamic_predict(
-                dv_last_obs=dv_last_diff,
-                dv_ar_coeff=dv_lag_diff_coeff,
-                iv_pred_design_mat=x_iv,
-                iv_pred_coeff=x_iv_coeff
-            )
+                prediction = dynamic_forecast(
+                    dv_last_obs=dv_last,
+                    dv_ar_coeff=dv_lag_coeff,
+                    iv_pred_design_mat=x_iv,
+                    iv_pred_coeff=x_iv_coeff
+                )
+
+            elif self.transform == "center" and self.make_dynamic:
+                dv_lag_cent_var = (f"{self.dep_var_lag}_"
+                                   f"{self._var_center_postfix}"
+                                   )
+                dv_lag_cent_coeff = coeff_map[dv_lag_cent_var]
+                dv_last_cent_var = (f"{self.dep_var}_"
+                                    f"{self._var_center_postfix}_"
+                                    f"{self._var_last_postfix}"
+                                    )
+                dv_last_cent = data[dv_last_cent_var].iloc[0]
+                x_iv = x[[c for c in x.columns if c != dv_lag_cent_var]].to_numpy()
+                x_iv_coeff = np.array([v for k, v in coeff_map.items()
+                                       if k != dv_lag_cent_var]
+                                      )
+
+                prediction = dynamic_forecast(
+                    dv_last_obs=dv_last_cent,
+                    dv_ar_coeff=dv_lag_cent_coeff,
+                    iv_pred_design_mat=x_iv,
+                    iv_pred_coeff=x_iv_coeff
+                )
+
+            elif self.transform == "difference" and not self.make_dynamic:
+                x = x.to_numpy()
+                pred_diff = x @ b
+                dv_last_var = (f"{self.dep_var}_"
+                               f"{self._var_last_postfix}"
+                               )
+                dv_last = data[dv_last_var].iloc[0]
+                prediction = dv_last + np.cumsum(pred_diff)
+            else:
+                dv_lag_diff_var = (f"{self.dep_var_lag}_"
+                                   f"{self._var_diff_postfix}"
+                                   )
+                dv_lag_diff_coeff = coeff_map[(f"{self.dep_var_lag}_"
+                                               f"{self._var_diff_postfix}"
+                                               )]
+                dv_last_diff_var = (f"{self.dep_var}_"
+                                    f"{self._var_diff_postfix}_"
+                                    f"{self._var_last_postfix}"
+                                    )
+                dv_last_diff = data[dv_last_diff_var].iloc[0]
+                x_iv = x[[c for c in x.columns if c != dv_lag_diff_var]].to_numpy()
+                x_iv_coeff = np.array([v for k, v in coeff_map.items()
+                                       if k != dv_lag_diff_var]
+                                      )
+
+                prediction = dynamic_forecast(
+                    dv_last_obs=dv_last_diff,
+                    dv_ar_coeff=dv_lag_diff_coeff,
+                    iv_pred_design_mat=x_iv,
+                    iv_pred_coeff=x_iv_coeff
+                )
 
         return prediction
 
@@ -470,7 +483,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             group_zellner_g: Union[int, float] = None,
             group_prior_err_var_shape: Union[int, float] = None,
             group_prior_err_var_scale: Union[int, float] = None,
-            group_posterior_confidence: str = "medium",
+            group_posterior_confidence: Literal["low", "medium", "high"] = "medium",
     ) -> HierarchicalFit:
         if not isinstance(data, (pd.DataFrame, PreparedPanelData)):
             raise TypeError(
@@ -650,7 +663,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
     def predict(self,
                 fit: list,
-                data: PreparedPanelData,
+                data: PreparedPanelData
                 ) -> tuple:
 
         # Reconstruct member_fit and predictor_data based on matching keys.
@@ -690,7 +703,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         with Pool() as pool:
             predictions = pool.starmap(
                 self._predict,
-                zip(fits, dfs),
+                zip(fits, dfs, repeat(data.prediction_type)),
             )
 
         # Collect results into a dataframe

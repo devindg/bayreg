@@ -1,5 +1,5 @@
 import numpy as np
-from typing import NamedTuple, Union
+from typing import NamedTuple, Union, Literal
 import warnings
 import pandas as pd
 
@@ -140,6 +140,7 @@ class PreparedPanelData(NamedTuple):
     transform_vars: Union[None, list]
     dynamic: bool
     data_type: str
+    prediction_type: Literal["standard", "forecast"]
     num_obs: int
     num_members: int
 
@@ -189,6 +190,7 @@ class ProcessPanelRegressionData:
         data_cols = [dep_var] + predictor_vars
         df[data_cols] = df[data_cols].astype(float)
         predictor_data = df[predictor_vars].to_numpy().flatten()
+        prediction_type = "standard"
         data_type = "in-sample"
 
         if self.transform == "difference":
@@ -233,6 +235,7 @@ class ProcessPanelRegressionData:
             df.loc[df[date_var] >= first_forecast_date, dep_var] = np.nan
 
         # Check if design matrix has one or more constant values
+        # TODO: revisit logic for checking constants
         const_x = np.all(df[predictor_vars] == df[predictor_vars].iloc[0, :], axis=0)
         has_const_ = np.all(df[predictor_vars] == 1, axis=0)
         if np.any(has_const_):
@@ -314,6 +317,7 @@ class ProcessPanelRegressionData:
                 transform_vars,
                 self.make_dynamic,
                 data_type,
+                prediction_type,
                 num_obs,
                 num_members
             )
@@ -522,6 +526,7 @@ class ProcessPanelRegressionData:
                 self.transform_vars,
                 self.make_dynamic,
                 "in-sample",
+                "forecast",
                 num_obs_in_samp,
                 len(member_dfs)
             )
@@ -536,6 +541,7 @@ class ProcessPanelRegressionData:
                 self.transform_vars,
                 self.make_dynamic,
                 "out-of-sample",
+                "forecast",
                 num_obs_out_samp,
                 len(member_dfs)
             )
