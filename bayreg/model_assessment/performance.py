@@ -23,7 +23,7 @@ class WAIC(NamedTuple):
 
 class OOS_Error(NamedTuple):
     press: float
-    pointwise_press: np.ndarray
+    loo_resid: np.ndarray
 
 
 def pointwise_loglike_norm(response, response_mean, error_variance):
@@ -137,23 +137,33 @@ def r_squared_classic(response, mean_prediction):
     return r2
 
 
-def oos_error(response, predictors, mean_coeff, prior_coeff_prec, proj_mat_diag_adj=None):
+def oos_error(response,
+              predictors,
+              mean_coeff,
+              prior_coeff_prec,
+              leverage_predictors=None,
+              leverage_prior_coeff_prec=None,
+              ):
     # PRESS statistic (predicted residual error sum of squares)
     y = response.copy().flatten()
-    x = predictors
+    x = predictors.copy()
 
-    proj_mat_diag = (
-        get_projection_matrix_diagonal
-        (x, prior_coeff_prec)[0]
-        .flatten()
-    )
-
-    if proj_mat_diag_adj is None:
-        proj_mat_diag_adj = np.zeros_like(proj_mat_diag)
+    if leverage_predictors is None:
+        proj_mat_diag = (
+            get_projection_matrix_diagonal
+            (x, prior_coeff_prec)[0]
+            .flatten()
+        )
+    else:
+        proj_mat_diag = (
+            get_projection_matrix_diagonal
+            (leverage_predictors, leverage_prior_coeff_prec)[0]
+            .flatten()
+        )
 
     mean_prediction = x @ mean_coeff
     resid = y - mean_prediction.flatten()
-    pointwise_press = (resid / (1. - (proj_mat_diag + proj_mat_diag_adj))) ** 2
-    press = np.mean(pointwise_press)
+    loo_resid = resid / (1. - proj_mat_diag)
+    press = np.mean(loo_resid ** 2)
 
-    return OOS_Error(press, pointwise_press)
+    return OOS_Error(press, loo_resid)

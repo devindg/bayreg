@@ -760,21 +760,47 @@ class ConjugateBayesianLinearRegression:
         )
 
     def oos_error(self,
-                  proj_mat_diag_adj: Union[np.ndarray, None] = None
+                  leverage_predictors: Union[np.ndarray, None] = None,
+                  leverage_prior_coeff_cov: Union[np.ndarray, None] = None
                   ):
         """
-
-        :param proj_mat_diag_adj: NumPy array or None. If a centered transformation is made
-        to the data, then OOS error metrics, like PRESS, will not be correct. To address,
-        an adjustment to the projection matrix/leverage diagonal can be applied by adding
-        1/(# observations) to the diagonal elements in a standard regression, or
-        1 /(# observations by member) in a fixed effects panel regression.
+        :param leverage_predictors: When a data transformation is made, such as centering,
+        this affects the projection matrix, which in turn could affect computation of leverage.
+        Because leverage is used to compute LOO error, it may be desirable to compute LOO
+        on the untransformed data. This argument can be used for passing a modified design
+        matrix that will adjust the leverage calculation and provide LOO error on the
+        untransformed dependent variable. If provided, leverage_prior_coeff_cov must also be
+        provided.
+        :param leverage_prior_coeff_cov: When a data transformation is made, such as centering,
+        this affects the projection matrix, which in turn could affect computation of leverage.
+        Because leverage is used to compute LOO error, it may be desirable to compute LOO
+        on the untransformed data. This argument is used to accommodate a modified design
+        matrix passed to argument 'leverage_predictors'. If provided, leverage_predictors
+        must also be provided.
         """
         self._posterior_exists_check()
 
         response = self.response
         predictors = self.predictors
         prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
+
+        if leverage_predictors is not None and leverage_prior_coeff_cov is None:
+            raise ValueError(
+                "leverage_predictors is not None but leverage_prior_coeff_cov is None. "
+                "Both leverage_predictors and leverage_prior_coeff_cov must be provided."
+            )
+
+        if leverage_predictors is None and leverage_prior_coeff_cov is not None:
+            raise ValueError(
+                "leverage_predictors is None but leverage_prior_coeff_cov is not None. "
+                "Both leverage_predictors and leverage_prior_coeff_cov must be provided."
+            )
+
+        if leverage_prior_coeff_cov is not None:
+            leverage_prior_coeff_prec = mat_inv(leverage_prior_coeff_cov)
+        else:
+            leverage_prior_coeff_prec = None
+
         post_coeff_mean = self.posterior.post_coeff_mean
 
         return oos_error(
@@ -782,5 +808,6 @@ class ConjugateBayesianLinearRegression:
             predictors=predictors,
             mean_coeff=post_coeff_mean,
             prior_coeff_prec=prior_coeff_prec,
-            proj_mat_diag_adj=proj_mat_diag_adj
+            leverage_predictors=leverage_predictors,
+            leverage_prior_coeff_prec=leverage_prior_coeff_prec
         )

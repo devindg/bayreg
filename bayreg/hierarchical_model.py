@@ -88,7 +88,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             prior_err_var_shape: Union[int, float] = None,
             prior_err_var_scale: Union[int, float] = None,
             zellner_g: Union[int, float] = None,
-            proj_mat_diag_adj=None
+            leverage_predictors_adj: Union[np.ndarray, None] = None
     ) -> FitResults:
         y = response.copy()
         x = predictors.copy()
@@ -114,7 +114,29 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             prior_coeff_mean=prior.prior_coeff_mean
         )
         waic = mod.waic()
-        oos_error = mod.oos_error(proj_mat_diag_adj=proj_mat_diag_adj)
+
+        # Adjust design and projection matrix if a transform to the data was made
+        # to get correct LOO error estimates.
+        if leverage_predictors_adj is None:
+            oos_error = mod.oos_error()
+        else:
+            num_pred_add = leverage_predictors_adj.shape[1]
+            lev_predictors = np.c_[leverage_predictors_adj, predictors]
+            num_lev_pred = lev_predictors.shape[1]
+            lev_prior_coeff_cov = np.zeros((num_lev_pred, num_lev_pred))
+
+            # Adjust prior coefficient covariance matrix to reflect new
+            # design matrix. Make the prior vague.
+            for m in range(num_pred_add):
+                lev_prior_coeff_cov[m, m] = 1e6
+
+            lev_prior_coeff_cov[num_pred_add:, num_pred_add:] = prior.prior_coeff_cov
+
+            oos_error = mod.oos_error(
+                leverage_predictors=lev_predictors,
+                leverage_prior_coeff_cov=lev_prior_coeff_cov
+            )
+
         rmspe = np.sqrt(np.mean(mod.mspe().mean_squared_prediction_error))
         r_sqr = np.mean(mod.r_sqr())
         r_sqr_classic = np.mean(mod.r_sqr_classic())
@@ -303,18 +325,19 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         y_grp = df[dep_var]
         x_grp = df[predictor_vars]
 
-        # Centering affects the leverage matrix for the LOO CV calculation.
-        # An adjustment needs to be applied to the centered leverage matrix.
-        proj_mat_diag_adj = None
-        if self.transform == "center":
-            num_obs_by_grp = (
-                df
-                .groupby(self.unique_id_var)[self.unique_id_var]
-                .size()
-                .to_numpy()
-                .astype(int)
+        # Data transformation can affect the leverage matrix for the LOO CV calculation.
+        # An adjustment needs to be applied to the design matrix and prior coefficient
+        # precision matrix in some cases.
+        if self.transform is None:
+            lev_x_grp_adj = None
+        elif self.transform == "center":
+            lev_x_grp_adj = (
+                    pd
+                    .get_dummies(df[self.unique_id_var])
+                    .to_numpy() * 1.
             )
-            proj_mat_diag_adj = np.repeat(1. / num_obs_by_grp, num_obs_by_grp)
+        else:
+            lev_x_grp_adj = None
 
         group_res = self._fit(
             response=y_grp,
@@ -325,7 +348,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             prior_err_var_shape=prior_err_var_shape,
             prior_err_var_scale=prior_err_var_scale,
             zellner_g=zellner_g,
-            proj_mat_diag_adj=proj_mat_diag_adj,
+            leverage_predictors_adj=lev_x_grp_adj
         )
 
         return group_res
@@ -357,13 +380,15 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         y_m = [j[1][dep_var] for j in data]
         x_m = [j[1][[c for c in predictor_vars if c in j[1].columns]] for j in data]
 
-        # Centering affects the leverage matrix for the LOO CV calculation.
-        # An adjustment needs to be applied to the centered leverage matrix.
-        if self.transform == "center":
-            num_obs_m = [j[1].shape[0] for j in data]
-            proj_mat_diag_adj = [np.repeat(1. / n, n) for n in num_obs_m]
+        # Data transformation can affect the leverage matrix for the LOO CV calculation.
+        # An adjustment needs to be applied to the design matrix and prior coefficient
+        # precision matrix in some cases.
+        if self.transform is None:
+            lev_x_grp_adj = repeat(None)
+        elif self.transform == "center":
+            lev_x_grp_adj = [np.ones((j.size, 1)) for j in y_m]
         else:
-            proj_mat_diag_adj = repeat(None)
+            lev_x_grp_adj = repeat(None)
 
         if prior_coeff_mean is not None:
             if len(prior_coeff_mean) == 1:
@@ -422,7 +447,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                     prior_err_var_shape,
                     prior_err_var_scale,
                     zellner_g,
-                    proj_mat_diag_adj
+                    lev_x_grp_adj
                 ),
             )
             pool.close()
