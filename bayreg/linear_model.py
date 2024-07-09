@@ -19,7 +19,7 @@ def drop_zero_cols(regress_design_matrix: np.ndarray):
     x = regress_design_matrix
     num_obs, num_pred = x.shape
     zero_x = np.all(abs(x) <= 1e-9, axis=0)
-    if np.sum(zero_x) > 1:
+    if np.sum(zero_x) > 0:
         valid_cols = []
         for j in range(num_pred):
             if not zero_x[j]:
