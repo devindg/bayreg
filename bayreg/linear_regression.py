@@ -128,10 +128,10 @@ class ConjugateBayesianLinearRegression:
                 resp = response.copy()
 
             if isinstance(response, (pd.Series, pd.DataFrame)):
-                if isinstance(response, pd.Series):
+                if isinstance(response, pd.DataFrame):
+                    self.response_name = response.columns.tolist()
+                elif isinstance(response, pd.Series):
                     self.response_name = [response.name]
-                else:
-                    self.response_name = response.columns.values.tolist()
 
                 self.response_index = response.index
                 resp = resp.to_numpy()
@@ -196,10 +196,10 @@ class ConjugateBayesianLinearRegression:
                 if not np.all(pred.index == response.index):
                     raise ValueError("The response and predictors indexes must match.")
 
-                if isinstance(pred, pd.Series):
+                if isinstance(pred, pd.DataFrame):
+                    self.predictors_names = pred.columns.tolist()
+                elif isinstance(pred, pd.Series):
                     self.predictors_names = [pred.name]
-                else:
-                    self.predictors_names = pred.columns.values.tolist()
 
                 pred = pred.to_numpy()
 
@@ -585,11 +585,12 @@ class ConjugateBayesianLinearRegression:
                         "instantiated with ConjugateBayesianLinearRegression."
                     )
 
-                if isinstance(x, pd.Series):
+                if isinstance(x, pd.DataFrame):
+                    predictors_names = x.columns.tolist()
+                elif isinstance(x, pd.Series):
                     predictors_names = [x.name]
-                else:
-                    predictors_names = x.columns.values.tolist()
 
+                # noinspection PyUnboundLocalVariable
                 if not all(
                         self.predictors_names[i] == predictors_names[i]
                         for i in range(self.num_coeff)

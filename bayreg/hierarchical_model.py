@@ -7,8 +7,8 @@ from operator import itemgetter
 from threadpoolctl import ThreadpoolController
 import numpy as np
 import pandas as pd
-from bayreg.linear_model import ConjugateBayesianLinearRegression as CBLR
-from bayreg.linear_model import Prior, Posterior, drop_zero_cols
+from bayreg.linear_regression import ConjugateBayesianLinearRegression as CBLR
+from bayreg.linear_regression import Prior, Posterior, drop_zero_cols
 from bayreg.model_assessment.performance import WAIC, OOS_Error
 from bayreg.model_assessment.residual_diagnostics import studentized_residuals as stud_resid
 from bayreg.model_assessment.residual_diagnostics import Outliers
@@ -35,6 +35,8 @@ class UniqueIDLengthMismatch(Exception):
 
 class FitResults(NamedTuple):
     fit: Posterior
+    fit_vals: np.ndarray
+    fit_vals_back_transform: Union[np.ndarray, None]
     prior: Prior
     waic: WAIC
     oos_error: OOS_Error
@@ -83,21 +85,23 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
     def _fit(
             self,
-            response: Union[pd.Series, pd.DataFrame],
-            predictors: Union[pd.Series, pd.DataFrame],
+            data: pd.DataFrame,
+            dep_var: str,
+            predictor_vars: list,
             num_post_samp: int,
             prior_coeff_mean: Union[np.ndarray, list, tuple] = None,
             prior_coeff_cov: Union[np.ndarray, list, tuple] = None,
             prior_err_var_shape: Union[int, float] = None,
             prior_err_var_scale: Union[int, float] = None,
             zellner_g: Union[int, float] = None,
-            leverage_predictors_adj: Union[np.ndarray, None] = None
+            leverage_predictors_adj: Union[np.ndarray, None] = None,
+            offset_var: Union[str, None] = None
     ) -> FitResults:
-        y = response.copy()
-        x = predictors.copy()
+        y = data[dep_var]
+        x = data[predictor_vars]
 
-        mod = CBLR(response=y, predictors=x, seed=self.seed)
         with thread_controller.limit(limits=1, user_api="blas"):
+            mod = CBLR(response=y, predictors=x, seed=self.seed)
             fit = mod.fit(
                 num_post_samp=num_post_samp,
                 prior_coeff_mean=prior_coeff_mean,
@@ -106,6 +110,13 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 prior_err_var_scale=prior_err_var_scale,
                 zellner_g=zellner_g,
             )
+
+        fit_vals = x @ fit.post_coeff_mean
+
+        if offset_var is not None:
+            fit_vals_back_transform = fit_vals + data[offset_var].to_numpy()
+        else:
+            fit_vals_back_transform = None
 
         prior = mod.prior
         pred_vars = mod.predictors_names
@@ -124,7 +135,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             oos_error = mod.oos_error()
         else:
             num_pred_add = leverage_predictors_adj.shape[1]
-            lev_predictors = np.c_[leverage_predictors_adj, predictors]
+            lev_predictors = np.c_[leverage_predictors_adj, x.to_numpy()]
             num_lev_pred = lev_predictors.shape[1]
             lev_prior_coeff_cov = np.zeros((num_lev_pred, num_lev_pred))
 
@@ -146,6 +157,8 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
         return FitResults(
             fit,
+            fit_vals,
+            fit_vals_back_transform,
             prior,
             waic,
             oos_error,
@@ -326,17 +339,16 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         if data.transform is None:
             dep_var = data.dep_var
             predictor_vars = data.predictor_vars
+            offset_var = None
         else:
             transform_vars = data.transform_vars
             dep_var = transform_vars[0]
             predictor_vars = transform_vars[1:]
+            offset_var = self.dep_var_offset
 
         df = (pd.concat([j[1] for j in data.member_dfs])
               .reset_index(drop=True)
               )
-
-        y_grp = df[dep_var]
-        x_grp = df[predictor_vars]
 
         # Data transformation can affect the leverage matrix for the LOO CV calculation.
         # An adjustment needs to be applied to the design matrix and prior coefficient
@@ -353,15 +365,17 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             lev_x_grp_adj = None
 
         group_res = self._fit(
-            response=y_grp,
-            predictors=x_grp,
+            data=df,
+            dep_var=dep_var,
+            predictor_vars=predictor_vars,
             num_post_samp=num_post_samp,
             prior_coeff_mean=prior_coeff_mean,
             prior_coeff_cov=prior_coeff_cov,
             prior_err_var_shape=prior_err_var_shape,
             prior_err_var_scale=prior_err_var_scale,
             zellner_g=zellner_g,
-            leverage_predictors_adj=lev_x_grp_adj
+            leverage_predictors_adj=lev_x_grp_adj,
+            offset_var=offset_var
         )
 
         return group_res
@@ -380,18 +394,21 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         if self.transform is None:
             dep_var = self.dep_var
             predictor_vars = self.predictor_vars
+            offset_var = None
         else:
             transform_vars = self.transform_vars
             dep_var = transform_vars[0]
             predictor_vars = transform_vars[1:]
+            offset_var = self.dep_var_offset
 
         if isinstance(data, PreparedPanelData):
             data = data.member_dfs
 
         num_members = len(data)
         mem_ids = [j[0] for j in data]
-        y_m = [j[1][dep_var] for j in data]
-        x_m = [j[1][[c for c in predictor_vars if c in j[1].columns]] for j in data]
+        df_m = [j[1] for j in data]
+        y_m = [j[dep_var] for j in df_m]
+        pred_vars_m = [c for c in predictor_vars for j in data if c in j[1].columns]
 
         # Data transformation can affect the leverage matrix for the LOO CV calculation.
         # An adjustment needs to be applied to the design matrix and prior coefficient
@@ -452,15 +469,17 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             mem_res = pool.starmap(
                 self._fit,
                 zip(
-                    y_m,
-                    x_m,
+                    df_m,
+                    repeat(dep_var),
+                    pred_vars_m,
                     repeat(num_post_samp),
                     prior_coeff_mean,
                     prior_coeff_cov,
                     prior_err_var_shape,
                     prior_err_var_scale,
                     zellner_g,
-                    lev_x_grp_adj
+                    lev_x_grp_adj,
+                    offset_var
                 ),
             )
             pool.close()
