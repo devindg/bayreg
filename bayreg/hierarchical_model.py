@@ -7,13 +7,13 @@ from operator import itemgetter
 from threadpoolctl import ThreadpoolController
 import numpy as np
 import pandas as pd
-from bayreg.linear_regression import ConjugateBayesianLinearRegression as CBLR
-from bayreg.linear_regression import Prior, Posterior, drop_zero_cols
-from bayreg.model_assessment.performance import WAIC, OOS_Error
-from bayreg.model_assessment.residual_diagnostics import studentized_residuals as stud_resid
-from bayreg.model_assessment.residual_diagnostics import Outliers
-from bayreg.linear_algebra.array_operations import mat_inv
-from bayreg.transformations.data_utils import ProcessPanelRegressionData, PreparedPanelData
+from ..bayreg.linear_regression import ConjugateBayesianLinearRegression as CBLR
+from ..bayreg.linear_regression import Prior, Posterior, drop_zero_cols
+from ..bayreg.model_assessment.performance import WAIC, OOS_Error
+from ..bayreg.model_assessment.residual_diagnostics import studentized_residuals as stud_resid
+from ..bayreg.model_assessment.residual_diagnostics import Outliers
+from ..bayreg.linear_algebra.array_operations import mat_inv
+from ..bayreg.transformations.data_utils import ProcessPanelRegressionData, PreparedPanelData
 
 thread_controller = ThreadpoolController()
 

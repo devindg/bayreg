@@ -1,7 +1,7 @@
 from typing import NamedTuple
 import numpy as np
 from scipy.stats import t as t_dist
-from bayreg.linear_algebra.array_operations import mat_inv, svd
+from ..linear_algebra.array_operations import mat_inv, svd
 
 
 class Outliers(NamedTuple):
