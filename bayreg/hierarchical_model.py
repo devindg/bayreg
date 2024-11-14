@@ -531,7 +531,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         grp_post_coeff_mean = grp_fit.post_coeff_mean
         grp_post_coeff_cov_diag = np.diag(np.diag(grp_fit.post_coeff_cov))
 
-        def shrinkage_factor(cov_mat):
+        def shrinkage_factor(cov_mat, num_obs):
             grp_r_sqr = group_fit_results.r_sqr
             grp_post_err_var = grp_fit.post_err_var_scale / grp_fit.post_err_var_shape
             num_pred = cov_mat.shape[0]
@@ -550,20 +550,20 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
             # Shrinkage factors based on group posterior confidence
             if group_post_cov_shrink_factor == 0:
-                g = 1.0
+                g_factor = 1.0
             else:
-                g = (group_post_cov_shrink_factor
-                     * (1 / tr * (1 - grp_r_sqr) / grp_r_sqr))
+                g_factor = (group_post_cov_shrink_factor * num_obs
+                            * (1 / tr * (1 - grp_r_sqr) / grp_r_sqr))
 
-                # The trace and/or the determinant of the covariance matrix
-                # can be a very large number, resulting in shrinkage factors
-                # that are excessive. If a shrinkage factor exceeds
-                # the group-level posterior error variance, then fall back
-                # to the inverse of the posterior variance.
-                if 1 / (g * grp_post_err_var) > 1:
-                    g = 1 / grp_post_err_var
+            # The trace and/or the determinant of the covariance matrix
+            # can be a very large number, resulting in shrinkage factors
+            # that are excessive. If a shrinkage factor exceeds
+            # the group-level posterior error variance, then fall back
+            # to the inverse of the posterior variance.
+            if 1 / (g_factor * grp_post_err_var) > 1:
+                g_factor = 1 / grp_post_err_var
 
-            return g
+            return g_factor
 
         """
         Get shrinkage factors for each member in the group.
@@ -622,7 +622,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             else:
                 cov = grp_post_coeff_cov_diag
 
-            g = shrinkage_factor(cov)
+            g = shrinkage_factor(cov_mat=cov, num_obs=n_m)
             mem_prior_coeff_cov.append(g * cov)
             mem_prior_coeff_mean.append(grp_post_coeff_mean[valid_cols, :])
 
