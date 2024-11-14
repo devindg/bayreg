@@ -106,7 +106,11 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 zellner_g=zellner_g,
             )
 
-        x = x.to_numpy().reshape(-1, len(predictor_vars))
+        x = (
+            x[mod.predictors_names]
+            .to_numpy()
+            .reshape(-1, len(mod.predictors_names))
+        )
         fit_vals = x @ fit.post_coeff_mean
 
         if offset_var is not None:
