@@ -47,11 +47,6 @@ class FitResults(NamedTuple):
     pred_vars: list
 
 
-class HierarchicalFit(NamedTuple):
-    member_fits: list
-    group_fit: FitResults
-
-
 class BayesianPanelRegression(ProcessPanelRegressionData):
     def __init__(
             self,
@@ -111,10 +106,11 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 zellner_g=zellner_g,
             )
 
+        x = x.to_numpy().reshape(-1, len(predictor_vars))
         fit_vals = x @ fit.post_coeff_mean
 
         if offset_var is not None:
-            fit_vals_back_transform = fit_vals + data[offset_var].to_numpy()
+            fit_vals_back_transform = fit_vals + data[[offset_var]].to_numpy()
         else:
             fit_vals_back_transform = None
 
@@ -135,7 +131,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             oos_error = mod.oos_error()
         else:
             num_pred_add = leverage_predictors_adj.shape[1]
-            lev_predictors = np.c_[leverage_predictors_adj, x.to_numpy()]
+            lev_predictors = np.c_[leverage_predictors_adj, x]
             num_lev_pred = lev_predictors.shape[1]
             lev_prior_coeff_cov = np.zeros((num_lev_pred, num_lev_pred))
 
@@ -408,7 +404,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         mem_ids = [j[0] for j in data]
         df_m = [j[1] for j in data]
         y_m = [j[dep_var] for j in df_m]
-        pred_vars_m = [c for c in predictor_vars for j in data if c in j[1].columns]
+        pred_vars_m = [[c for c in predictor_vars if c in j.columns] for j in df_m]
 
         # Data transformation can affect the leverage matrix for the LOO CV calculation.
         # An adjustment needs to be applied to the design matrix and prior coefficient
@@ -479,7 +475,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                     prior_err_var_scale,
                     zellner_g,
                     lev_x_grp_adj,
-                    offset_var
+                    repeat(offset_var)
                 ),
             )
             pool.close()
@@ -495,24 +491,18 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
     def hierarchical_fit(
             self,
             data: Union[pd.DataFrame, PreparedPanelData],
-            group_num_post_samp: int = 500,
+            group_fit_results: FitResults,
             member_num_post_samp: int = 500,
-            group_prior_coeff_mean: Union[np.ndarray, list, tuple] = None,
-            group_prior_coeff_cov: Union[np.ndarray, list, tuple] = None,
-            group_zellner_g: Union[int, float] = None,
-            group_prior_err_var_shape: Union[int, float] = None,
-            group_prior_err_var_scale: Union[int, float] = None,
-            group_posterior_confidence: Literal["low", "medium", "high"] = "medium",
-    ) -> HierarchicalFit:
+            group_post_cov_shrink_factor: Union[int, float] = 1.0,
+    ) -> FitResults:
         if not isinstance(data, (pd.DataFrame, PreparedPanelData)):
             raise TypeError(
                 "data must be a Pandas Dataframe or a PreparedPanelData object."
             )
 
-        if group_posterior_confidence not in ("low", "medium", "high"):
+        if group_post_cov_shrink_factor < 0:
             raise ValueError(
-                "group_posterior_confidence takes 'low', 'medium', and 'high' "
-                "as acceptable values."
+                "group_posterior_shrink_factor must be a non-negative number."
             )
 
         if isinstance(data, pd.DataFrame):
@@ -526,36 +516,19 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             )
 
         if data.transform is not None:
-            dep_var = data.transform_vars[0]
             pred_vars = data.transform_vars[1:]
         else:
-            dep_var = data.dep_var
             pred_vars = data.predictor_vars
 
         num_pred_vars = len(pred_vars)
-        mem_num_obs = [j[1].shape[0] for j in data.member_dfs]
-        grp_num_obs = sum(mem_num_obs)
-
-        if group_zellner_g is None:
-            group_zellner_g = max([grp_num_obs, num_pred_vars ** 2])
-
-        grp_res = self.group_fit(
-            data=data,
-            num_post_samp=group_num_post_samp,
-            prior_coeff_mean=group_prior_coeff_mean,
-            prior_coeff_cov=group_prior_coeff_cov,
-            zellner_g=group_zellner_g,
-            prior_err_var_shape=group_prior_err_var_shape,
-            prior_err_var_scale=group_prior_err_var_scale,
-        )
 
         # Retrieve the group-level, coefficient posterior mean and covariance matrix
-        grp_fit = grp_res.fit
+        grp_fit = group_fit_results.fit
         grp_post_coeff_mean = grp_fit.post_coeff_mean
         grp_post_coeff_cov_diag = np.diag(np.diag(grp_fit.post_coeff_cov))
 
-        def shrinkage_factors(cov_mat):
-            grp_r_sqr = grp_res.r_sqr
+        def shrinkage_factor(cov_mat):
+            grp_r_sqr = group_fit_results.r_sqr
             grp_post_err_var = grp_fit.post_err_var_scale / grp_fit.post_err_var_shape
             num_pred = cov_mat.shape[0]
             # Grab trace of the posterior covariance matrix.
@@ -572,28 +545,21 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             tr = trace_grp_post_coeff_cov / num_pred * grp_post_err_var
 
             # Shrinkage factors based on group posterior confidence
-            g_h = 0.2 * (1 / tr
-                         * (1 - grp_r_sqr) / grp_r_sqr)
-            g_m = (1 / tr
-                   * (1 - grp_r_sqr) / grp_r_sqr)
-            g_l = 25. * (1 / tr
-                         * (1 - grp_r_sqr) / grp_r_sqr)
+            if group_post_cov_shrink_factor == 0:
+                g = 1.0
+            else:
+                g = (group_post_cov_shrink_factor
+                     * (1 / tr * (1 - grp_r_sqr) / grp_r_sqr))
 
-            # The trace and/or the determinant of the covariance matrix
-            # can be a very large number, resulting in shrinkage factors
-            # that are excessive. If a shrinkage factor exceeds
-            # the group-level posterior error variance, then fall back
-            # to the inverse of the posterior variance.
-            if 1 / (g_h * grp_post_err_var) > 1:
-                g_h = 1 / grp_post_err_var
+                # The trace and/or the determinant of the covariance matrix
+                # can be a very large number, resulting in shrinkage factors
+                # that are excessive. If a shrinkage factor exceeds
+                # the group-level posterior error variance, then fall back
+                # to the inverse of the posterior variance.
+                if 1 / (g * grp_post_err_var) > 1:
+                    g = 1 / grp_post_err_var
 
-            if 1 / (g_m * grp_post_err_var) > 1:
-                g_m = 1 / grp_post_err_var
-
-            if 1 / (g_l * grp_post_err_var) > 1:
-                g_l = 1 / grp_post_err_var
-
-            return g_h, g_m, g_l
+            return g
 
         """
         Get shrinkage factors for each member in the group.
@@ -631,11 +597,18 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         mem_prior_coeff_cov = []
         new_dfs = []
         for k, df_m in enumerate(dfs):
-            x_m = df_m[pred_vars]
+            x_m = df_m.loc[:, pred_vars]
             x_m_new, valid_cols = drop_zero_cols(x_m.to_numpy())
             n_m, k_m = x_m_new.shape
-            new_df = x_m.iloc[:, valid_cols].copy()
-            new_df[dep_var] = df_m[dep_var]
+
+            if len(valid_cols) == num_pred_vars:
+                new_df = df_m.copy()
+            else:
+                new_df = (
+                    df_m
+                    .copy()
+                    .drop(columns=[pred_vars[i] for i in range(num_pred_vars) if i not in valid_cols])
+                )
             new_dfs.append(new_df)
 
             if k_m != num_pred_vars:
@@ -645,30 +618,12 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             else:
                 cov = grp_post_coeff_cov_diag
 
-            g_high, g_medium, g_low = shrinkage_factors(cov)
-
-            # if n_m <= 1.25 * k_m:
-            #     (mem_prior_coeff_cov
-            #      .append(g_low * cov)
-            #      )
-            # else:
-            if group_posterior_confidence == "high":
-                (mem_prior_coeff_cov
-                 .append(g_high * cov)
-                 )
-            elif group_posterior_confidence == "medium":
-                (mem_prior_coeff_cov
-                 .append(g_medium * cov)
-                 )
-            else:
-                (mem_prior_coeff_cov
-                 .append(g_low * cov)
-                 )
-
+            g = shrinkage_factor(cov)
+            mem_prior_coeff_cov.append(g * cov)
             mem_prior_coeff_mean.append(grp_post_coeff_mean[valid_cols, :])
 
         new_data = list(zip(mem_ids, new_dfs))
-        mem_res = self.member_fit(
+        hierarchical_mem_res = self.member_fit(
             data=new_data,
             num_post_samp=member_num_post_samp,
             prior_coeff_mean=mem_prior_coeff_mean,
@@ -678,7 +633,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             zellner_g=None,
         )
 
-        return HierarchicalFit(mem_res, grp_res)
+        return hierarchical_mem_res
 
     def predict(self,
                 fit: list,

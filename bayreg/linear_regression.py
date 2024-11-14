@@ -436,7 +436,7 @@ class ConjugateBayesianLinearRegression:
                         "zellner_g must be a strictly positive integer or float."
                     )
             else:
-                zellner_g = n
+                zellner_g = max([n, self.num_coeff ** 2])
 
             w = 0.5
             prior_coeff_prec = (
