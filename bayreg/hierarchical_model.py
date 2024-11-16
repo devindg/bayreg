@@ -504,9 +504,9 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 "data must be a Pandas Dataframe or a PreparedPanelData object."
             )
 
-        if group_post_cov_shrink_factor < 0:
+        if group_post_cov_shrink_factor <= 0:
             raise ValueError(
-                "group_posterior_shrink_factor must be a non-negative number."
+                "group_posterior_shrink_factor must be a positive number."
             )
 
         if isinstance(data, pd.DataFrame):
@@ -521,8 +521,10 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
         if data.transform is not None:
             pred_vars = data.transform_vars[1:]
+            dep_var = data.transform_vars[0]
         else:
             pred_vars = data.predictor_vars
+            dep_var = self.dep_var
 
         num_pred_vars = len(pred_vars)
 
@@ -531,37 +533,12 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         grp_post_coeff_mean = grp_fit.post_coeff_mean
         grp_post_coeff_cov_diag = np.diag(np.diag(grp_fit.post_coeff_cov))
 
-        def shrinkage_factor(cov_mat, num_obs):
-            grp_r_sqr = group_fit_results.r_sqr
-            grp_post_err_var = grp_fit.post_err_var_scale / grp_fit.post_err_var_shape
-            num_pred = cov_mat.shape[0]
-            # Grab trace of the posterior covariance matrix.
-            # This will be used to scale the covariance matrix.
+        # grp_post_err_var = grp_fit.post_err_var_scale / grp_fit.post_err_var_shape
 
-            # De-scale the covariance matrix by dividing out the
-            # posterior variance of the error term. This is done
-            # before taking the trace and determinant to help avoid
-            # issues with numerical overflow. The posterior variance
-            # will be re-introduced later.
-            trace_grp_post_coeff_cov = np.trace(cov_mat / grp_post_err_var)
-
-            # Re-introduce posterior variance.
-            tr = trace_grp_post_coeff_cov / num_pred * grp_post_err_var
-
+        def shrinkage_factor(num_obs, resid):
             # Shrinkage factors based on group posterior confidence
-            if group_post_cov_shrink_factor == 0:
-                g_factor = 1.0
-            else:
-                g_factor = (group_post_cov_shrink_factor * num_obs
-                            * (1 / tr * (1 - grp_r_sqr) / grp_r_sqr))
-
-            # The trace and/or the determinant of the covariance matrix
-            # can be a very large number, resulting in shrinkage factors
-            # that are excessive. If a shrinkage factor exceeds
-            # the group-level posterior error variance, then fall back
-            # to the inverse of the posterior variance.
-            if 1 / (g_factor * grp_post_err_var) > 1:
-                g_factor = 1 / grp_post_err_var
+            resid_var = np.var(resid, ddof=num_pred_vars)
+            g_factor = group_post_cov_shrink_factor * num_obs / resid_var
 
             return g_factor
 
@@ -601,6 +578,13 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         mem_prior_coeff_cov = []
         new_dfs = []
         for k, df_m in enumerate(dfs):
+            y_m = df_m.loc[:, dep_var].to_numpy()
+            y_m_fit = (
+                group_fit_results
+                .fit_vals
+                .flatten()[df_m.index.values, :]
+            )
+            r_m = y_m - y_m_fit
             x_m = df_m.loc[:, pred_vars]
             x_m_new, valid_cols = drop_zero_cols(x_m.to_numpy())
             n_m, k_m = x_m_new.shape
@@ -622,7 +606,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             else:
                 cov = grp_post_coeff_cov_diag
 
-            g = shrinkage_factor(cov_mat=cov, num_obs=n_m)
+            g = shrinkage_factor(num_obs=n_m, resid=r_m)
             mem_prior_coeff_cov.append(g * cov)
             mem_prior_coeff_mean.append(grp_post_coeff_mean[valid_cols, :])
 
