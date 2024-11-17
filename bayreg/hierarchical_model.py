@@ -521,10 +521,8 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
         if data.transform is not None:
             pred_vars = data.transform_vars[1:]
-            dep_var = data.transform_vars[0]
         else:
             pred_vars = data.predictor_vars
-            dep_var = self.dep_var
 
         num_pred_vars = len(pred_vars)
 
@@ -532,13 +530,21 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         grp_fit = group_fit_results.fit
         grp_post_coeff_mean = grp_fit.post_coeff_mean
         grp_post_coeff_cov_diag = np.diag(np.diag(grp_fit.post_coeff_cov))
+        grp_rsq = group_fit_results.r_sqr
 
-        # grp_post_err_var = grp_fit.post_err_var_scale / grp_fit.post_err_var_shape
+        def shrinkage_factor(cov, coeff, num_obs, resid):
+            r_m_var = np.var(resid, ddof=num_pred_vars)
+            cov_tr = np.trace(cov)
+            coeff_sq = np.sum(coeff ** 2)
+            num_coeff = coeff.size
 
-        def shrinkage_factor(num_obs, resid):
-            # Shrinkage factors based on group posterior confidence
-            resid_var = np.var(resid, ddof=num_pred_vars)
-            g_factor = group_post_cov_shrink_factor * num_obs / resid_var
+            g_factor = (
+                    group_post_cov_shrink_factor
+                    * num_obs / num_coeff ** 2
+                    * coeff_sq / cov_tr
+                    / r_m_var
+                    * (1 - grp_rsq) / grp_rsq
+            )
 
             return g_factor
 
@@ -578,13 +584,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         mem_prior_coeff_cov = []
         new_dfs = []
         for k, df_m in enumerate(dfs):
-            y_m = df_m.loc[:, dep_var].to_numpy()
-            y_m_fit = (
-                group_fit_results
-                .fit_vals
-                .flatten()[df_m.index.values, :]
-            )
-            r_m = y_m - y_m_fit
+            r_m = group_fit_results.student_resid.resid[df_m.index.values]
             x_m = df_m.loc[:, pred_vars]
             x_m_new, valid_cols = drop_zero_cols(x_m.to_numpy())
             n_m, k_m = x_m_new.shape
@@ -600,15 +600,22 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             new_dfs.append(new_df)
 
             if k_m != num_pred_vars:
-                cov = grp_post_coeff_cov_diag[
+                cov_m = grp_post_coeff_cov_diag[
                     np.ix_(valid_cols, valid_cols)
                 ]
+                coeff_m = grp_post_coeff_mean[valid_cols, :]
             else:
-                cov = grp_post_coeff_cov_diag
+                cov_m = grp_post_coeff_cov_diag
+                coeff_m = grp_post_coeff_mean
 
-            g = shrinkage_factor(num_obs=n_m, resid=r_m)
-            mem_prior_coeff_cov.append(g * cov)
-            mem_prior_coeff_mean.append(grp_post_coeff_mean[valid_cols, :])
+            g = shrinkage_factor(
+                cov=cov_m,
+                coeff=coeff_m,
+                num_obs=n_m,
+                resid=r_m
+            )
+            mem_prior_coeff_cov.append(g * cov_m)
+            mem_prior_coeff_mean.append(coeff_m)
 
         new_data = list(zip(mem_ids, new_dfs))
         hierarchical_mem_res = self.member_fit(
