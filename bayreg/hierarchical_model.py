@@ -534,17 +534,18 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
         def shrinkage_factor(cov, coeff, num_obs, resid):
             r_m_var = np.var(resid, ddof=num_pred_vars)
-            cov_tr = np.trace(cov)
-            coeff_sq = np.sum(coeff ** 2)
             num_coeff = coeff.size
+            t_sq = coeff.flatten() ** 2 / np.diag(cov)
 
             g_factor = (
                     group_post_cov_shrink_factor
                     * num_obs / num_coeff ** 2
-                    * coeff_sq / cov_tr
                     / r_m_var
                     * (1 - grp_rsq) / grp_rsq
+                    * t_sq
             )
+
+            g_factor = np.diag(g_factor ** 0.5)
 
             return g_factor
 
@@ -614,7 +615,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 num_obs=n_m,
                 resid=r_m
             )
-            mem_prior_coeff_cov.append(g * cov_m)
+            mem_prior_coeff_cov.append(g @ cov_m @ g.T)
             mem_prior_coeff_mean.append(coeff_m)
 
         new_data = list(zip(mem_ids, new_dfs))
