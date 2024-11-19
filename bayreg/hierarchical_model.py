@@ -521,78 +521,49 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
         if data.transform is not None:
             pred_vars = data.transform_vars[1:]
-            dep_var = data.transform_vars[0]
         else:
             pred_vars = data.predictor_vars
-            dep_var = self.dep_var
 
         num_pred_vars = len(pred_vars)
 
         # Retrieve the group-level, coefficient posterior mean and covariance matrix
         grp_fit = group_fit_results.fit
         grp_post_coeff_mean = grp_fit.post_coeff_mean
-        grp_post_coeff_cov_diag = np.diag(np.diag(grp_fit.post_coeff_cov))
-
-        def shrinkage_factor(y, cov, coeff, num_obs, resid):
-            grp_rsq = group_fit_results.r_sqr
-            y_m_sq = np.mean(y ** 2)
-            r_m_var = np.var(resid)
-            num_coeff = coeff.size
-            coeff_prec = 1. / np.diag(cov)
-
-            g_factor = (
-                    group_post_cov_shrink_factor
-                    * num_obs / num_coeff ** 2
-                    * r_m_var / y_m_sq
-                    * (1 - grp_rsq) / grp_rsq
-                    * coeff_prec
-            )
-
-            g_factor = np.diag(g_factor ** 0.5)
-
-            return g_factor
 
         """
         Get shrinkage factors for each member in the group.
         Shrinkage is based on the group-level posterior
-        coefficient covariance matrix. Because the group level
-        regression is pooled, it's possible that some member's
-        in the group could have predictors without variation.
-        For example, Member 1 one might have values [1, 2, 3]
-        for predictor X, but Member 2 might have values [0, 0, 0]
-        or [3, 3, 3] (note that [1, 1, 1] is valid as that
-        represents an intercept).
+        coefficients. Because the group level regression is pooled, 
+        it's possible that some member's in the group could have 
+        predictors without variation. For example, Member 1 one 
+        might have values [1, 2, 3] for predictor X, but Member 2 
+        might have values [0, 0, 0] or [3, 3, 3] (note that [1, 1, 1] 
+        is valid as that represents an intercept).
 
         For members that have predictors without variation,
         their shrinkage factor will be based on a slice of
-        the group-level covariance matrix. For example, if the 
-        covariance matrix is
+        the group-level coefficient vector. For example, if the 
+        coefficient vector
 
-                        1 0 0
-                        0 5 0
-                        0 0 8
+                        [1, 5, 8]
 
         and a member has no variation for predictor 2, then 
-        shrinkage will be based on the sliced covariance matrix
+        shrinkage will be based on the sliced coefficient
 
-                        1 0
-                        0 8
+                        [1, 8]
 
-        That is, the 2nd row and 2nd column are deleted from 
-        the full covariance matrix.
+        That is, the 2nd element will be removed.
         """
 
         mem_ids = [j[0] for j in data.member_dfs]
         dfs = [j[1].copy() for j in data.member_dfs]
         mem_prior_coeff_mean = []
-        mem_prior_coeff_cov = []
+        mem_zellner_g = []
         new_dfs = []
         for k, df_m in enumerate(dfs):
-            y_m = df_m[dep_var]
-            r_m = group_fit_results.student_resid.resid[df_m.index.values]
             x_m = df_m.loc[:, pred_vars]
-            x_m_new, valid_cols = drop_zero_cols(x_m.to_numpy())
-            n_m, k_m = x_m_new.shape
+            x_m, valid_cols = drop_zero_cols(x_m.to_numpy())
+            n_m, k_m = x_m.shape
 
             if len(valid_cols) == num_pred_vars:
                 new_df = df_m.copy()
@@ -600,27 +571,20 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 new_df = (
                     df_m
                     .copy()
-                    .drop(columns=[pred_vars[i] for i in range(num_pred_vars) if i not in valid_cols])
+                    .drop(columns=[pred_vars[i]
+                                   for i in range(num_pred_vars)
+                                   if i not in valid_cols]
+                          )
                 )
             new_dfs.append(new_df)
 
             if k_m != num_pred_vars:
-                cov_m = grp_post_coeff_cov_diag[
-                    np.ix_(valid_cols, valid_cols)
-                ]
                 coeff_m = grp_post_coeff_mean[valid_cols, :]
             else:
-                cov_m = grp_post_coeff_cov_diag
                 coeff_m = grp_post_coeff_mean
 
-            g = shrinkage_factor(
-                y=y_m,
-                cov=cov_m,
-                coeff=coeff_m,
-                num_obs=n_m,
-                resid=r_m
-            )
-            mem_prior_coeff_cov.append(g @ cov_m @ g.T)
+            zellner_g_m = group_post_cov_shrink_factor * n_m / k_m
+            mem_zellner_g.append(zellner_g_m)
             mem_prior_coeff_mean.append(coeff_m)
 
         new_data = list(zip(mem_ids, new_dfs))
@@ -628,10 +592,10 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             data=new_data,
             num_post_samp=member_num_post_samp,
             prior_coeff_mean=mem_prior_coeff_mean,
-            prior_coeff_cov=mem_prior_coeff_cov,
+            prior_coeff_cov=None,
             prior_err_var_shape=None,
             prior_err_var_scale=None,
-            zellner_g=None,
+            zellner_g=mem_zellner_g,
         )
 
         return hierarchical_mem_res
