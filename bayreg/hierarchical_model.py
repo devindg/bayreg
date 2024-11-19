@@ -521,8 +521,10 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
         if data.transform is not None:
             pred_vars = data.transform_vars[1:]
+            dep_var = data.transform_vars[0]
         else:
             pred_vars = data.predictor_vars
+            dep_var = self.dep_var
 
         num_pred_vars = len(pred_vars)
 
@@ -530,19 +532,20 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         grp_fit = group_fit_results.fit
         grp_post_coeff_mean = grp_fit.post_coeff_mean
         grp_post_coeff_cov_diag = np.diag(np.diag(grp_fit.post_coeff_cov))
-        grp_rsq = group_fit_results.r_sqr
 
-        def shrinkage_factor(cov, coeff, num_obs, resid):
-            r_m_var = np.var(resid, ddof=num_pred_vars)
+        def shrinkage_factor(y, cov, coeff, num_obs, resid):
+            grp_rsq = group_fit_results.r_sqr
+            y_m_sq = np.mean(y ** 2)
+            r_m_var = np.var(resid)
             num_coeff = coeff.size
-            t_sq = coeff.flatten() ** 2 / np.diag(cov)
+            coeff_prec = 1. / np.diag(cov)
 
             g_factor = (
                     group_post_cov_shrink_factor
                     * num_obs / num_coeff
-                    / r_m_var
+                    * r_m_var / y_m_sq
                     * (1 - grp_rsq) / grp_rsq
-                    * t_sq
+                    * coeff_prec
             )
 
             g_factor = np.diag(g_factor ** 0.5)
@@ -585,6 +588,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         mem_prior_coeff_cov = []
         new_dfs = []
         for k, df_m in enumerate(dfs):
+            y_m = df_m[dep_var]
             r_m = group_fit_results.student_resid.resid[df_m.index.values]
             x_m = df_m.loc[:, pred_vars]
             x_m_new, valid_cols = drop_zero_cols(x_m.to_numpy())
@@ -610,6 +614,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 coeff_m = grp_post_coeff_mean
 
             g = shrinkage_factor(
+                y=y_m,
                 cov=cov_m,
                 coeff=coeff_m,
                 num_obs=n_m,
