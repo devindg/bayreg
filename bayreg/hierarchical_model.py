@@ -529,6 +529,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         # Retrieve the group-level, coefficient posterior mean and covariance matrix
         grp_fit = group_fit_results.fit
         grp_post_coeff_mean = grp_fit.post_coeff_mean
+        grp_rsq = group_fit_results.r_sqr
 
         """
         Get shrinkage factors for each member in the group.
@@ -583,7 +584,11 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             else:
                 coeff_m = grp_post_coeff_mean
 
-            zellner_g_m = group_post_cov_shrink_factor * n_m / k_m
+            zellner_g_m = (
+                    group_post_cov_shrink_factor
+                    * n_m / k_m
+                    * (1 - grp_rsq) / grp_rsq
+            )
             mem_zellner_g.append(zellner_g_m)
             mem_prior_coeff_mean.append(coeff_m)
 
