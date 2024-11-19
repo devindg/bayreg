@@ -542,7 +542,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
             g_factor = (
                     group_post_cov_shrink_factor
-                    * num_obs / num_coeff
+                    * num_obs / num_coeff ** 2
                     * r_m_var / y_m_sq
                     * (1 - grp_rsq) / grp_rsq
                     * coeff_prec
