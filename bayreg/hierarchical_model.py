@@ -587,7 +587,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             zellner_g_m = (
                     group_post_cov_shrink_factor
                     * n_m / k_m
-                    * (1 - grp_rsq) / grp_rsq
+                    * grp_rsq  / (1 - grp_rsq)
             )
             mem_zellner_g.append(zellner_g_m)
             mem_prior_coeff_mean.append(coeff_m)
