@@ -30,7 +30,7 @@ def mat_inv(z):
     if dim == 1:
         return 1. / z
     else:
-        return np.linalg.solve(z, np.eye(dim))
+        return np.linalg.lstsq(z, np.eye(dim))[0]
 
 
 def svd(x):

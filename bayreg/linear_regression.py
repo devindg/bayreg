@@ -14,24 +14,58 @@ from ..bayreg.model_assessment.performance import (
 )
 
 
-def drop_zero_cols(regress_design_matrix: np.ndarray):
-    # Check if design matrix has more than one constant. If so, drop redundant columns.
-    x = regress_design_matrix
-    num_obs, num_pred = x.shape
-    zero_x = np.all(abs(x) <= 1e-9, axis=0)
-    if np.sum(zero_x) > 0:
-        valid_cols = []
-        for j in range(num_pred):
-            if not zero_x[j]:
-                valid_cols.append(j)
+def valid_design_matrix(
+        regress_design_matrix: np.ndarray,
+        const_tol: float = 1e-6
+):
+    x = np.array(regress_design_matrix)
+    cols = [j for j in range(x.shape[1])]
 
-        x_new = x[:, valid_cols]
+    # Initialize valid columns
+    valid_cols = cols
 
-        return x_new, valid_cols
+    # Identify intercept, if any
+    all_ones = np.all(x == 1, axis=0)
+    if np.any(all_ones):
+        intercept_index = np.where(all_ones)[0]
+
+        if len(intercept_index) > 1:
+            redundant_intercept = intercept_index[1:]
+            print(f"Columns with indexes {redundant_intercept} are redundant "
+                  f"intercepts and will be ignored"
+                  )
+        else:
+            redundant_intercept = []
+
+        intercept_index = intercept_index[0]  # First index with an intercept
+        valid_cols = [j for j in valid_cols if j not in redundant_intercept]
     else:
-        valid_cols = [j for j in range(num_pred)]
+        intercept_index = None
 
-        return x, valid_cols
+    # Identify duplicate columns, if any
+    _, non_redundant_cols = np.unique(x, axis=1, return_index=True)
+    if len(cols) != len(non_redundant_cols):
+        redundant_cols = [j for j in cols if j not in non_redundant_cols]
+        print(f"Columns with indexes {redundant_cols} are redundant and will be ignored.")
+        valid_cols = [j for j in valid_cols if j not in redundant_cols]
+
+    # Identify constant columns, if any
+    const_cols = np.where(np.std(x, axis=0) <= const_tol)[0]
+    if len(const_cols) > 0:
+        if intercept_index is None:
+            print(f"Columns with indexes {const_cols} are non-intercept constants and will be ignored.")
+            valid_cols = [j for j in valid_cols if j not in const_cols]
+        else:
+            non_intercept_const_cols = [j for j in const_cols if j != intercept_index]
+
+            if len(non_intercept_const_cols) > 0:
+                print(f"Columns with indexes {non_intercept_const_cols} are "
+                      f"non-intercept constants and will be ignored."
+                      )
+
+            valid_cols = [j for j in valid_cols if j not in non_intercept_const_cols]
+
+    return x[:, valid_cols], valid_cols
 
 
 class Posterior(NamedTuple):
@@ -282,6 +316,7 @@ class ConjugateBayesianLinearRegression:
             prior_err_var_shape: Union[int, float] = None,
             prior_err_var_scale: Union[int, float] = None,
             zellner_g: Union[int, float] = None,
+            max_mat_cond_index: Union[int, float] = 30.
     ):
         """
 
@@ -291,6 +326,7 @@ class ConjugateBayesianLinearRegression:
         :param prior_err_var_shape:
         :param prior_err_var_scale:
         :param zellner_g:
+        :param max_mat_cond_index:
         :return:
         """
 
@@ -329,7 +365,7 @@ class ConjugateBayesianLinearRegression:
                 prior_err_var_scale = (0.01 * sd_y) ** 2
 
         # Check if design matrix has more than one constant. If so, drop redundant columns.
-        x, valid_cols = drop_zero_cols(x)
+        x, valid_cols = valid_design_matrix(x)
         if x.shape[1] != self.num_coeff:
             warnings.warn(
                 "No column in the design matrix can be all zeros. "
@@ -438,7 +474,34 @@ class ConjugateBayesianLinearRegression:
             else:
                 zellner_g = max([n, self.num_coeff ** 2])
 
-            w = 0.5
+            # Get weights for untransformed and diagonalized precision matrix.
+            # Use the ratio of the average determinant to average trace
+            # as a measure of the stability of the design matrix. The
+            # lower this ratio is, the less stable the design matrix is,
+            # in which case more weight will be given to a diagonal precision
+            # matrix.
+
+            if self.num_coeff > 1:
+                x_z = valid_design_matrix(x - np.mean(x, axis=0))[0]
+                x_z = x_z / np.std(x_z, axis=0, ddof=1)
+                XtX_z = x_z.T @ x_z
+                num_pred_cent = x_z.shape[1]
+                eig_vals = np.linalg.eigvalsh(XtX_z)
+                eig_cond_index = np.sqrt(np.max(eig_vals) / eig_vals)
+                eig_cond_index = np.nan_to_num(eig_cond_index, nan=np.inf)
+
+                if np.any(eig_cond_index > max_mat_cond_index):
+                    w = 0
+                else:
+                    det_sign, log_det = np.linalg.slogdet(XtX_z)
+                    avg_determ = (det_sign * np.exp(log_det)) ** (1 / num_pred_cent)
+                    avg_trace = np.trace(XtX_z) / num_pred_cent
+                    w = avg_determ / avg_trace
+
+                del XtX_z
+            else:
+                w = 1
+
             prior_coeff_prec = (
                     1 / zellner_g * (w * XtX + (1 - w) * np.diag(np.diag(XtX)))
             )
