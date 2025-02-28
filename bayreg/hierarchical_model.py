@@ -7,13 +7,13 @@ from operator import itemgetter
 from threadpoolctl import ThreadpoolController
 import numpy as np
 import pandas as pd
-from ..bayreg.linear_regression import ConjugateBayesianLinearRegression as CBLR
-from ..bayreg.linear_regression import Prior, Posterior, drop_zero_cols
-from ..bayreg.model_assessment.performance import WAIC, OOS_Error
-from ..bayreg.model_assessment.residual_diagnostics import studentized_residuals as stud_resid
-from ..bayreg.model_assessment.residual_diagnostics import Outliers
-from ..bayreg.linear_algebra.array_operations import mat_inv
-from ..bayreg.transformations.data_utils import ProcessPanelRegressionData, PreparedPanelData
+from .linear_regression import ConjugateBayesianLinearRegression as CBLR
+from .linear_regression import Prior, Posterior, valid_design_matrix
+from .model_assessment.performance import WAIC, OOS_Error
+from .model_assessment.residual_diagnostics import studentized_residuals as stud_resid
+from .model_assessment.residual_diagnostics import Outliers
+from .linear_algebra.array_operations import mat_inv
+from .transformations.data_utils import ProcessPanelRegressionData, PreparedPanelData
 
 thread_controller = ThreadpoolController()
 
@@ -563,7 +563,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         new_dfs = []
         for k, df_m in enumerate(dfs):
             x_m = df_m.loc[:, pred_vars]
-            x_m, valid_cols = drop_zero_cols(x_m.to_numpy())
+            x_m, valid_cols = valid_design_matrix(x_m.to_numpy())
             n_m, k_m = x_m.shape
 
             if len(valid_cols) == num_pred_vars:

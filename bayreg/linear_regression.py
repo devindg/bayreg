@@ -484,21 +484,19 @@ class ConjugateBayesianLinearRegression:
             if self.num_coeff > 1:
                 x_z = valid_design_matrix(x - np.mean(x, axis=0))[0]
                 x_z = x_z / np.std(x_z, axis=0, ddof=1)
-                XtX_z = x_z.T @ x_z
-                num_pred_cent = x_z.shape[1]
-                eig_vals = np.linalg.eigvalsh(XtX_z)
+                eig_vals = np.linalg.eigvalsh(x_z.T @ x_z)
                 eig_cond_index = np.sqrt(np.max(eig_vals) / eig_vals)
                 eig_cond_index = np.nan_to_num(eig_cond_index, nan=np.inf)
 
                 if np.any(eig_cond_index > max_mat_cond_index):
                     w = 0
                 else:
-                    det_sign, log_det = np.linalg.slogdet(XtX_z)
-                    avg_determ = (det_sign * np.exp(log_det)) ** (1 / num_pred_cent)
-                    avg_trace = np.trace(XtX_z) / num_pred_cent
+                    det_sign, log_det = np.linalg.slogdet(x_z.T @ x_z)
+                    avg_determ = (det_sign * np.exp(log_det)) ** (1 / x_z.shape[1])
+                    avg_trace = np.trace(x_z.T @ x_z) / x_z.shape[1]
                     w = avg_determ / avg_trace
 
-                del XtX_z
+                del x_z
             else:
                 w = 1
 

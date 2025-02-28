@@ -3,7 +3,7 @@ from typing import NamedTuple
 import numpy as np
 from scipy.special import logsumexp
 from scipy.stats import norm
-from ..model_assessment.residual_diagnostics import (
+from .residual_diagnostics import (
     get_projection_matrix_diagonal,
 )
 
