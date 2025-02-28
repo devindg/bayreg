@@ -79,9 +79,9 @@ def fourier_matrix(
     # Create cosine and sine input scalar factors, 2 * pi * n / (p / s), n=1,...,N
     c = 2 * np.pi * np.arange(1, num_harmonics + 1) / periodicity
     # Create cosine and sine input values, 2 * pi * n / (p / s) * t, t=1,...,T and n=1,...,N
-    X = c * time_index[:, np.newaxis]
+    x = c * time_index[:, np.newaxis]
     # Pass X to cos() and sin() functions to create Fourier series
-    fft_mat = np.c_[np.cos(X), np.sin(X)]
+    fft_mat = np.c_[np.cos(x), np.sin(x)]
 
     return fft_mat
 
@@ -94,7 +94,7 @@ class BayesianVAR:
             add_intercept: bool = True,
             add_trend: bool = False,
             add_seasonal: bool = False,
-            periodicity: int = 1,
+            seasonal_periodicity: int = 1,
             num_seasonal_harmonics: int = 0,
     ):
         self.ar_order = ar_order
@@ -102,8 +102,10 @@ class BayesianVAR:
         self.add_intercept = add_intercept
         self.add_trend = add_trend
         self.add_seasonal = add_seasonal
-        self.periodicity = periodicity
+        self.seasonal_periodicity = seasonal_periodicity
         self.num_seasonal_harmonics = num_seasonal_harmonics
+
+        # Initialize other class attributes
         self.num_endog = None
         self.orig_num_obs = None
         self.num_obs = None
@@ -122,9 +124,10 @@ class BayesianVAR:
         add_intercept = self.add_intercept
         add_trend = self.add_trend
         add_seasonal = self.add_seasonal
-        periodicity = self.periodicity
+        periodicity = self.seasonal_periodicity
         num_seasonal_harmonics = self.num_seasonal_harmonics
         orig_num_obs = self.orig_num_obs
+        last_data = self.last_data
 
         y = np.array(endog)
         num_rows, num_endog = y.shape
@@ -160,7 +163,7 @@ class BayesianVAR:
             )
             for p in range(ar_order):
                 w = p * num_endog
-                y_lags[p, w:] = self.last_data[0, :num_lag_vars - w]
+                y_lags[p, w:] = last_data[0, :num_lag_vars - w]
 
         time_polynomial = []
         if add_intercept:
@@ -248,7 +251,7 @@ class BayesianVAR:
             for_forecasting=False
         )
 
-        num_endog = self.num_endog
+        num_endog = endog.shape[1]
         dep_vars = data[:, :num_endog]
         pred_vars = data[:, num_endog:]
 
@@ -269,7 +272,8 @@ class BayesianVAR:
                 max_mat_cond_index=max_mat_cond_index
             )
             posterior.append(cblr_fit)
-            self.posterior = posterior
+
+        self.posterior = posterior
 
         return self.posterior
 
@@ -278,25 +282,27 @@ class BayesianVAR:
                  exog: Union[np.ndarray, None],
                  ):
 
-        if self.posterior is None:
-            raise AssertionError("No model was fit. Fit a model with method fit() "
-                                 "before calling forecast()."
-                                 )
-
-        if self.fit_with_exog is False and exog is not None:
-            raise ValueError("The model was not fit with exogenous variables. "
-                             "Make sure the 'exog' argument is None")
-
-        if self.fit_with_exog is True and exog is None:
-            raise ValueError("The model was fit with exogenous variables. "
-                             "Make sure to pass an array of exogenous variables "
-                             " to the 'exog' argument.")
-
         first_difference = self.first_difference
         num_endog = self.num_endog
         ar_order = self.ar_order
         num_lag_vars = num_endog * ar_order
         posterior = self.posterior
+        fit_with_exog = self.fit_with_exog
+        last_data = self.last_data
+
+        if posterior is None:
+            raise AssertionError("No model was fit. Fit a model with method fit() "
+                                 "before calling forecast()."
+                                 )
+
+        if fit_with_exog is False and exog is not None:
+            raise ValueError("The model was not fit with exogenous variables. "
+                             "Make sure the 'exog' argument is None")
+
+        if fit_with_exog is True and exog is None:
+            raise ValueError("The model was fit with exogenous variables. "
+                             "Make sure to pass an array of exogenous variables "
+                             " to the 'exog' argument.")
 
         endog = np.full(
             shape=(horizon, num_endog),
@@ -332,7 +338,7 @@ class BayesianVAR:
         y_fcst = y_fcst.T
 
         if first_difference:
-            last_ys = self.last_data[0, :num_endog]
-            y_fcst = np.cumsum(y_fcst, axis=0) + last_ys[np.newaxis, :]
+            last_endog = last_data[0, :num_endog]
+            y_fcst = last_endog[np.newaxis, :] + np.cumsum(y_fcst, axis=0)
 
         return y_fcst
