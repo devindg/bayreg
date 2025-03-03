@@ -3,6 +3,117 @@ from typing import Union
 import numpy as np
 from .linear_regression import ConjugateBayesianLinearRegression as CBLR
 from .linear_regression import valid_design_matrix
+from numba import njit, vectorize, float64, prange
+from numpy.random import normal
+
+
+@vectorize([float64(float64, float64)])
+def vec_rand_norm(mean, sd):
+    return normal(mean, sd)
+
+
+@njit
+def cumulative_sum(arr):
+    cuml_sum = np.empty_like(arr, dtype=np.float64)
+    current_sum = 0.0
+    for i in prange(arr.size):
+        current_sum += arr[i]
+        cuml_sum[i] = current_sum
+
+    return cuml_sum
+
+
+@njit(cache=True)
+def var_forecast(
+        data: np.ndarray,
+        ar_order: int,
+        first_difference: bool,
+        posterior: tuple,
+        mean_only: bool,
+        seed: int,
+        last_endog: np.ndarray,
+):
+    np.random.seed(seed)
+    num_endog = len(posterior)
+    num_lag_vars = num_endog * ar_order
+    horizon = data.shape[0]
+    num_coeff = posterior[0].post_coeff_mean.size
+    y_lags = data[:, :num_lag_vars].T
+    z = data[:, num_lag_vars:].T
+
+    if not mean_only:
+        num_samp = posterior[0].post_err_var.size
+        y_fcst = np.full(
+            shape=(num_samp, num_endog, horizon),
+            dtype=np.float64,
+            fill_value=np.nan
+        )
+
+        for s in prange(num_samp):
+            coeffs = np.empty(
+                shape=(num_endog, num_coeff),
+                dtype=np.float64
+            )
+            error_vars = np.empty(
+                shape=(num_endog,),
+                dtype=np.float64
+            )
+            for i in prange(num_endog):
+                coeffs[i, :] = posterior[i].post_coeff[s, :]
+                error_vars[i] = posterior[i].post_err_var[s, 0]
+
+            y_lag_coeffs = coeffs[:, :num_lag_vars]
+            z_coeffs = coeffs[:, num_lag_vars:]
+
+            for t in prange(horizon):
+                errors = vec_rand_norm(np.zeros_like(error_vars), error_vars ** 0.5)
+                if t == 0:
+                    pass
+                else:
+                    ys = np.concatenate((y_fcst[s, :, t - 1], y_lags[:, t - 1]))
+                    if 0 < t < ar_order:
+                        y_lags[:num_endog * t, t] = ys[:num_endog * t]
+                    else:
+                        y_lags[:num_endog * ar_order, t] = ys[:num_endog * ar_order]
+
+                y_fcst[s, :, t] = y_lag_coeffs @ y_lags[:, t] + z_coeffs @ z[:, t] + errors
+
+    else:
+        num_samp = 1
+        y_fcst = np.full(
+            shape=(num_samp, num_endog, horizon),
+            dtype=np.float64,
+            fill_value=np.nan
+        )
+        coeffs = np.empty(
+            shape=(num_endog, num_coeff),
+            dtype=np.float64
+        )
+        for i in prange(num_endog):
+            coeffs[i, :] = posterior[i].post_coeff_mean.T
+
+        y_lag_coeffs = coeffs[:, :num_lag_vars]
+        z_coeffs = coeffs[:, num_lag_vars:]
+
+        for t in prange(horizon):
+            if t == 0:
+                pass
+            else:
+                ys = np.concatenate((y_fcst[0, :, t - 1], y_lags[:, t - 1]))
+                if 0 < t < ar_order:
+                    y_lags[:num_endog * t, t] = ys[:num_endog * t]
+                else:
+                    y_lags[:num_endog * ar_order, t] = ys[:num_endog * ar_order]
+
+            y_fcst[0, :, t] = y_lag_coeffs @ y_lags[:, t] + z_coeffs @ z[:, t]
+
+    if first_difference:
+        for s in prange(num_samp):
+            for i in prange(num_endog):
+                y_fcst[s, i] = last_endog[i] + cumulative_sum(y_fcst[s, i])
+
+    return y_fcst
+
 
 warnings.filterwarnings("ignore")
 
@@ -110,6 +221,7 @@ class BayesianVAR:
         self.orig_num_obs = None
         self.num_obs = None
         self.last_data = None
+        self.fit_seed = None
         self.posterior = None
         self.fit_with_exog = None
 
@@ -216,7 +328,7 @@ class BayesianVAR:
             self.num_endog = num_endog
 
         if first_difference and for_forecasting:
-            data = np.concatenate((self.last_data, data), axis=0)
+            data = np.concatenate((last_data, data), axis=0)
 
         if first_difference:
             data = np.diff(data, n=1, axis=0)
@@ -224,6 +336,8 @@ class BayesianVAR:
         if not for_forecasting:
             data = data[~np.any(np.isnan(data), axis=1)]
             self.num_obs = data.shape[0]
+        else:
+            data = data[:, num_endog:]
 
         return data
 
@@ -244,6 +358,8 @@ class BayesianVAR:
             self.fit_with_exog = False
         else:
             self.fit_with_exog = True
+
+        self.fit_seed = seed
 
         data = self.prepare_data(
             endog=endog,
@@ -280,15 +396,15 @@ class BayesianVAR:
     def forecast(self,
                  horizon: int,
                  exog: Union[np.ndarray, None],
+                 mean_only=False,
                  ):
 
         first_difference = self.first_difference
         num_endog = self.num_endog
         ar_order = self.ar_order
-        num_lag_vars = num_endog * ar_order
         posterior = self.posterior
         fit_with_exog = self.fit_with_exog
-        last_data = self.last_data
+        last_endog = self.last_data[0, :num_endog]
 
         if posterior is None:
             raise AssertionError("No model was fit. Fit a model with method fit() "
@@ -304,41 +420,24 @@ class BayesianVAR:
                              "Make sure to pass an array of exogenous variables "
                              " to the 'exog' argument.")
 
-        endog = np.full(
-            shape=(horizon, num_endog),
-            dtype=np.float64,
-            fill_value=np.nan
-        )
-
         data = self.prepare_data(
-            endog=endog,
+            endog=np.full(
+                shape=(horizon, num_endog),
+                dtype=np.float64,
+                fill_value=np.nan
+            ),
             exog=exog,
             for_forecasting=True
         )
 
-        coeffs = np.concatenate([c.post_coeff_mean for c in posterior], axis=1).T
-        y_fcst = data[:, :num_endog].T
-        y_lags = data[:, num_endog:num_endog + num_lag_vars]
-        y_lag_coeffs = coeffs[:, :num_lag_vars]
-        z = data[:, num_endog + num_lag_vars:]
-        z_coeffs = coeffs[:, num_lag_vars:]
-
-        for t in range(horizon):
-            if t == 0:
-                pass
-            else:
-                ys = np.concatenate((y_fcst[:, t - 1], y_lags[t - 1, :]))
-                if 0 < t < ar_order:
-                    y_lags[t, :num_endog * t] = ys[:num_endog * t]
-                else:
-                    y_lags[t, :num_endog * ar_order] = ys[:num_endog * ar_order]
-
-            y_fcst[:, t] = y_lag_coeffs @ y_lags[t] + z_coeffs @ z[t]
-
-        y_fcst = y_fcst.T
-
-        if first_difference:
-            last_endog = last_data[0, :num_endog]
-            y_fcst = last_endog[np.newaxis, :] + np.cumsum(y_fcst, axis=0)
+        y_fcst = var_forecast(
+            data=data,
+            ar_order=ar_order,
+            first_difference=first_difference,
+            posterior=tuple(posterior),
+            mean_only=mean_only,
+            seed=self.fit_seed,
+            last_endog=last_endog
+        )
 
         return y_fcst
