@@ -303,8 +303,22 @@ class BayesianVAR:
                 "to prepare the training data set."
             )
 
-        y = np.array(endog)
-        num_rows, num_endog = y.shape
+        y = np.asarray(endog)
+        if y.ndim != 2:
+            raise ValueError(
+                "The array of endogenous variables needs to be a 2D array."
+            )
+        else:
+            num_rows, num_endog = y.shape
+            if num_endog < 2:
+                raise ValueError(
+                    "The number of endogenous variables needs to be at least 2."
+                )
+            if num_rows <= num_endog:
+                raise ValueError(
+                    "The number of endogenous variables cannot exceed the number "
+                    "of observations."
+                )
 
         if not for_forecasting:
             time_offset = 0
