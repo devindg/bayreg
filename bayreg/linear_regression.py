@@ -476,9 +476,9 @@ class ConjugateBayesianLinearRegression:
 
             # Get weights for untransformed and diagonalized precision matrix.
             # Use the ratio of the average determinant to average trace
-            # as a measure of the stability of the design matrix. The
+            # to measure the stability of the design matrix. The
             # lower this ratio is, the less stable the design matrix is,
-            # in which case more weight will be given to a diagonal precision
+            # in which case, more weight will be given to a diagonal precision
             # matrix.
 
             if self.num_coeff > 1:
@@ -490,7 +490,7 @@ class ConjugateBayesianLinearRegression:
                 # standard deviation to 1 to avoid division by 0.
                 x_means = np.mean(x, axis=0)
                 x_sds = np.std(x, axis=0, ddof=1)
-                x_sds[x_sds == 0] = 1.
+                x_sds[x_sds <= 1e-6] = 1.
                 x = (x - x_means[np.newaxis, :]) / x_sds[np.newaxis, :]
                 all_zero_cols = ~np.all(x == 0, axis=0)
                 k_z = x[:, all_zero_cols].shape[1]
