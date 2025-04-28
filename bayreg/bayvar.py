@@ -2,7 +2,14 @@ import warnings
 from typing import Union
 import numpy as np
 from .linear_regression import ConjugateBayesianLinearRegression as CBLR
-from .linear_regression import valid_design_matrix, Prior, Posterior
+from .linear_regression import (
+    valid_design_matrix,
+    default_zellner_g,
+    zellner_precision,
+    Prior,
+    Posterior
+)
+from ..bayreg.linear_algebra.array_operations import mat_inv
 from numba import njit, vectorize, float64, prange
 from numpy.random import normal
 
@@ -510,9 +517,13 @@ class BayesianVAR:
             prior_err_var_shape: Union[tuple, None] = None,
             prior_err_var_scale: Union[tuple, None] = None,
             zellner_g: Union[tuple, None] = None,
+            cross_lag_endog_zellner_g_factor: Union[int, float] = 1.,
             max_mat_cond_index=30,
             seed: int = 123
             ):
+
+        if cross_lag_endog_zellner_g_factor > 1:
+            raise ValueError("cross_lag_endog_zellner_g_factor must be in (0, 1].")
 
         standardize_data = self.standardize_data
 
@@ -529,10 +540,12 @@ class BayesianVAR:
             for_forecasting=False
         )
 
+        ar_order = self.ar_order
         num_endog = self.num_endog
         num_pred_vars = self.num_pred_vars
         endog_vars = data[:, :num_endog]
         pred_vars = data[:, num_endog:]
+        num_lag_vars = ar_order * num_endog
 
         if prior_coeff_mean is None:
             prior_coeff_mean = [np.zeros(num_pred_vars)] * num_endog
@@ -553,7 +566,77 @@ class BayesianVAR:
                 prior_coeff_mean = pcm
 
         if prior_coeff_cov is None:
-            prior_coeff_cov = [None] * num_endog
+            """
+            The default covariance prior is a modification of the Zellner-g
+            prior. Instead of using a fixed g value to scale
+            the sample covariance matrix, different g values are used 
+            for certain features. This is implemented as follows:
+
+            PriorCovariance = G @ V @ G, 
+
+            where @ is the dot product, V is the sample covariance matrix, 
+            and G = sqrt(diag(g_1, g_2, ..., g_k)), where k is the number of 
+            predictors. By default, g_1 = g_2 = ... = g_k. However, there is 
+            the option of shrinking cross-endogenous predictor variables more 
+            so than own-endogenous predictor variables toward zero. For example, 
+            assume the model is
+
+            y_1,t = a11 * y_1,t-1 + a12 * y_2,t-1 + b1 * x_t + e_1,t
+            y_2,t = a21 * y_1,t-1 + a22 * y_2,t-1 + b2 * x_t + e_2,t
+
+            The cross-endogenous coefficients are a12 and a21; the own-endogenous 
+            coefficients are a11 and a22; and the exogenous coefficients are 
+            b1 and b2. The sample covariance matrix is
+
+            V = (X.T @ X) ^ (-1), 
+
+            where X = [vec(y_1,t-1), vec(y,2,t-1), vec(x_t)], t=1,...,T
+
+            The standard Zellner-g prior takes the form g * V. But it may be 
+            desirable to shrink cross-endogenous predictor variables more than 
+            the other predictor variables in an attempt to be more conservative, 
+            especially if there is doubt about the degree of endogeneity (i.e., 
+            the extent of dynamic feedback loops). In other words, it's plausible 
+            in the given model that y_1 and y_2 are weakly related.
+
+            Taking g as given, and assuming endogeneity is believed to be weak, a 
+            reasonable prior for the covariance might be 
+
+            PriorCovariance_1 = sqrt(diag(g, g * h, g)) @ V @ sqrt(diag(g, g * h, g))
+            PriorCovariance_2 = sqrt(diag(g * h, g, g)) @ V @ sqrt(diag(g * h, g, g))
+
+            where h is some factor that scales g. In the context of weak endogeneity, The 
+            0 < h <= 1.
+
+            This prior will more aggressively shrink a12 and a21 closer to 0, assuming 
+            the mean prior is a vector of zeros, than a11, a22, b1, and b2.
+
+            Effectively, this prior casts doubt about the degree of feedback 
+            between the modeled endogenous variables, which will give more weight 
+            to the possibility of a standard AR(p) model with exogenous variables, also 
+            known as a dynamic regression model.
+
+            """
+
+            zell_g = default_zellner_g(x=pred_vars)
+            pcp = zellner_precision(
+                x=pred_vars,
+                zellner_g=zell_g,
+                max_mat_cond_index=max_mat_cond_index
+            )
+            pcc = mat_inv(pcp)
+            prior_coeff_cov = []
+            for k in range(num_endog):
+                zell_g_k = np.ones(num_pred_vars) * zell_g
+                mask = np.array([False] * num_pred_vars)
+                mask[:num_lag_vars][k::num_endog] = True
+                mask[num_lag_vars:] = True
+                zell_g_k[~mask] = zell_g * cross_lag_endog_zellner_g_factor
+                prior_coeff_cov.append(
+                    np.diag(zell_g_k ** 0.5)
+                    @ (1 / zell_g * pcc)
+                    @ np.diag(zell_g_k ** 0.5)
+                )
         else:
             if standardize_data:
                 endog_sds = self.data_sds[:num_endog]

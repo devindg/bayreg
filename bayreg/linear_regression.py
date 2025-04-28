@@ -68,6 +68,52 @@ def valid_design_matrix(
     return x[:, valid_cols], valid_cols
 
 
+def default_zellner_g(x: np.ndarray) -> float:
+    n, k = x.shape
+
+    return max([n, k ** 2])
+
+
+def zellner_precision(
+        x: np.ndarray,
+        zellner_g: float,
+        max_mat_cond_index: float
+) -> np.ndarray:
+    num_coeff = x.shape[1]
+    if num_coeff > 1:
+        x_means = np.mean(x, axis=0)
+        x_sds = np.std(x, axis=0, ddof=1)
+        x_sds[x_sds <= 1e-6] = 1.
+        x = (x - x_means[np.newaxis, :]) / x_sds[np.newaxis, :]
+        variable_cols = ~np.all(x == 0, axis=0)
+        k_z = x[:, variable_cols].shape[1]
+        eig_vals = np.linalg.eigvalsh(
+            (x.T @ x)[np.ix_(variable_cols, variable_cols)]
+        )
+        eig_cond_index = np.sqrt(np.max(eig_vals) / eig_vals)
+        eig_cond_index = np.nan_to_num(eig_cond_index, nan=np.inf)
+
+        if np.any(eig_cond_index > max_mat_cond_index):
+            w = 0
+        else:
+            det_sign, log_det = np.linalg.slogdet(
+                (x.T @ x)[np.ix_(variable_cols, variable_cols)]
+            )
+            avg_determ = (det_sign * np.exp(log_det)) ** (1 / k_z)
+            avg_trace = np.trace(
+                (x.T @ x)[np.ix_(variable_cols, variable_cols)]
+            ) / k_z
+            w = avg_determ / avg_trace
+    else:
+        w = 1
+
+    prior_coeff_prec = (
+            1 / zellner_g * (w * x.T @ x + (1 - w) * np.diag(np.diag(x.T @ x)))
+    )
+
+    return prior_coeff_prec
+
+
 class Posterior(NamedTuple):
     num_post_samp: int
     post_coeff_mean: np.ndarray
@@ -384,7 +430,6 @@ class ConjugateBayesianLinearRegression:
         # Get SVD of design matrix
         U, S, Vt = svd(x)
         StS = S.T @ S
-        XtX = Vt.T @ StS @ Vt
 
         # Check prior mean for regression coefficients
         if prior_coeff_mean is not None:
@@ -472,7 +517,7 @@ class ConjugateBayesianLinearRegression:
                         "zellner_g must be a strictly positive integer or float."
                     )
             else:
-                zellner_g = max([n, self.num_coeff ** 2])
+                zellner_g = default_zellner_g(x)
 
             # Get weights for untransformed and diagonalized precision matrix.
             # Use the ratio of the average determinant to average trace
@@ -481,44 +526,10 @@ class ConjugateBayesianLinearRegression:
             # in which case, more weight will be given to a diagonal precision
             # matrix.
 
-            if self.num_coeff > 1:
-                # To avoid unnecessary memory creation by generating
-                # a z-transformed version of 'x', 'x' will be rewritten
-                # in memory and then back-transformed. We need a record
-                # of each column's mean and standard deviation, and if
-                # there are any constant columns in 'x', convert the
-                # standard deviation to 1 to avoid division by 0.
-                x_means = np.mean(x, axis=0)
-                x_sds = np.std(x, axis=0, ddof=1)
-                x_sds[x_sds <= 1e-6] = 1.
-                x = (x - x_means[np.newaxis, :]) / x_sds[np.newaxis, :]
-                all_zero_cols = ~np.all(x == 0, axis=0)
-                k_z = x[:, all_zero_cols].shape[1]
-                eig_vals = np.linalg.eigvalsh(
-                    (x.T @ x)[np.ix_(all_zero_cols, all_zero_cols)]
-                )
-                eig_cond_index = np.sqrt(np.max(eig_vals) / eig_vals)
-                eig_cond_index = np.nan_to_num(eig_cond_index, nan=np.inf)
-
-                if np.any(eig_cond_index > max_mat_cond_index):
-                    w = 0
-                else:
-                    det_sign, log_det = np.linalg.slogdet(
-                        (x.T @ x)[np.ix_(all_zero_cols, all_zero_cols)]
-                    )
-                    avg_determ = (det_sign * np.exp(log_det)) ** (1 / k_z)
-                    avg_trace = np.trace(
-                        (x.T @ x)[np.ix_(all_zero_cols, all_zero_cols)]
-                    ) / k_z
-                    w = avg_determ / avg_trace
-
-                # Back-transform to get the original 'x' back
-                x = x * x_sds[np.newaxis, :] + x_means[np.newaxis, :]
-            else:
-                w = 1
-
-            prior_coeff_prec = (
-                    1 / zellner_g * (w * XtX + (1 - w) * np.diag(np.diag(XtX)))
+            prior_coeff_prec = zellner_precision(
+                x=x,
+                zellner_g=zellner_g,
+                max_mat_cond_index=max_mat_cond_index
             )
             prior_coeff_cov = mat_inv(prior_coeff_prec)
 
