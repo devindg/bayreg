@@ -522,7 +522,7 @@ class BayesianVAR:
             seed: int = 123
             ):
 
-        if cross_lag_endog_zellner_g_factor > 1:
+        if not 0 < cross_lag_endog_zellner_g_factor <= 1:
             raise ValueError("cross_lag_endog_zellner_g_factor must be in (0, 1].")
 
         standardize_data = self.standardize_data
@@ -605,11 +605,14 @@ class BayesianVAR:
             PriorCovariance_1 = sqrt(diag(g, g * h, g)) @ V @ sqrt(diag(g, g * h, g))
             PriorCovariance_2 = sqrt(diag(g * h, g, g)) @ V @ sqrt(diag(g * h, g, g))
 
-            where h is some factor that scales g. In the context of weak endogeneity, The 
+            where h is some factor that scales g. In the context of weak endogeneity, 
             0 < h <= 1.
 
             This prior will more aggressively shrink a12 and a21 closer to 0, assuming 
             the mean prior is a vector of zeros, than a11, a22, b1, and b2.
+            
+            Finally, if h < 1, whatever prior mean is provided for cross-endogenous 
+            coefficients will be set to 0 to enforce the rationale of this prior.
 
             Effectively, this prior casts doubt about the degree of feedback 
             between the modeled endogenous variables, which will give more weight 
@@ -637,6 +640,11 @@ class BayesianVAR:
                     @ (1 / zell_g * pcc)
                     @ np.diag(zell_g_k ** 0.5)
                 )
+                if cross_lag_endog_zellner_g_factor < 1:
+                    pcm = np.asarray(prior_coeff_mean[k])
+                    pcm[~mask] = 0.
+                    prior_coeff_mean[k] = pcm.tolist()
+
         else:
             if standardize_data:
                 endog_sds = self.data_sds[:num_endog]

@@ -1,21 +1,11 @@
-[tool.poetry]
+[project]
 name = "bayreg"
-version = "0.8.0"
-description = ""
-authors = ["Devin D. Garcia"]
-license = "BSD 3-Clause"
-#readme = "README.md"
-keywords = ["bayesian", "regression", "conjugate", "linear"]
-
-[tool.poetry.dependencies]
-python = ">=3.10, <3.12"
-scikit-learn = ">=1.2.1"
-numpy = ">=1.25.0"
-pandas = ">=1.5.3"
-numba = "^0.61.0"
-
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numba>=0.61.2",
+    "pandas>=2.2.3",
+    "scikit-learn>=1.6.1",
+]
