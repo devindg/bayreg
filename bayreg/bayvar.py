@@ -282,6 +282,8 @@ class BayesianVAR:
         self.fit_with_exog = None
         self.data_means = None
         self.data_sds = None
+        self.zellner_g = None
+        self.cross_endog_zellner_g = None
 
     def prepare_data(
             self,
@@ -520,13 +522,13 @@ class BayesianVAR:
             prior_coeff_cov: Union[tuple, None] = None,
             prior_err_var_shape: Union[tuple, None] = None,
             prior_err_var_scale: Union[tuple, None] = None,
-            zellner_g: Union[tuple, None] = None,
+            zellner_g: Union[float, None] = None,
             cross_lag_endog_zellner_g_factor: Union[int, float] = 1.,
             max_mat_cond_index=30,
             seed: int = 123
             ):
 
-        if not 0 < cross_lag_endog_zellner_g_factor <= 1:
+        if cross_lag_endog_zellner_g_factor > 1:
             raise ValueError("cross_lag_endog_zellner_g_factor must be in (0, 1].")
 
         standardize_data = self.standardize_data
@@ -537,6 +539,7 @@ class BayesianVAR:
             self.fit_with_exog = True
 
         self.fit_seed = seed
+        self.cross_endog_zellner_g = cross_lag_endog_zellner_g_factor
 
         data = self.prepare_data(
             endog=endog,
@@ -609,14 +612,11 @@ class BayesianVAR:
             PriorCovariance_1 = sqrt(diag(g, g * h, g)) @ V @ sqrt(diag(g, g * h, g))
             PriorCovariance_2 = sqrt(diag(g * h, g, g)) @ V @ sqrt(diag(g * h, g, g))
 
-            where h is some factor that scales g. In the context of weak endogeneity, 
+            where h is some factor that scales g. In the context of weak endogeneity, The 
             0 < h <= 1.
 
             This prior will more aggressively shrink a12 and a21 closer to 0, assuming 
             the mean prior is a vector of zeros, than a11, a22, b1, and b2.
-            
-            Finally, if h < 1, whatever prior mean is provided for cross-endogenous 
-            coefficients will be set to 0 to enforce the rationale of this prior.
 
             Effectively, this prior casts doubt about the degree of feedback 
             between the modeled endogenous variables, which will give more weight 
@@ -624,46 +624,51 @@ class BayesianVAR:
             known as a dynamic regression model.
 
             """
+            if zellner_g is None:
+                zellner_g = default_zellner_g(x=pred_vars)
 
-            zell_g = default_zellner_g(x=pred_vars)
             pcp = zellner_precision(
                 x=pred_vars,
-                zellner_g=zell_g,
+                zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index
             )
             pcc = mat_inv(pcp)
             prior_coeff_cov = []
             for k in range(num_endog):
-                zell_g_k = np.ones(num_pred_vars) * zell_g
+                zell_g_k = np.ones(num_pred_vars) * zellner_g
                 mask = np.array([False] * num_pred_vars)
                 mask[:num_lag_vars][k::num_endog] = True
                 mask[num_lag_vars:] = True
-                zell_g_k[~mask] = zell_g * cross_lag_endog_zellner_g_factor
+                zell_g_k[~mask] = zellner_g * cross_lag_endog_zellner_g_factor
                 prior_coeff_cov.append(
                     np.diag(zell_g_k ** 0.5)
-                    @ (1 / zell_g * pcc)
+                    @ (1 / zellner_g * pcc)
                     @ np.diag(zell_g_k ** 0.5)
                 )
                 if cross_lag_endog_zellner_g_factor < 1:
                     pcm = np.asarray(prior_coeff_mean[k])
                     pcm[~mask] = 0.
                     prior_coeff_mean[k] = pcm.tolist()
-
         else:
-            if standardize_data:
-                endog_sds = self.data_sds[:num_endog]
-                W = np.diag(self.data_sds[num_endog:])
-                pcc = []
-                for i, v in enumerate(prior_coeff_cov):
-                    if v is None:
-                        pass
-                    else:
-                        v = np.asarray(v)
-                        v = W @ v @ W / endog_sds[i] ** 2
+            if zellner_g is None:
+                zellner_g = default_zellner_g(x=pred_vars)
 
-                    pcc.append(v)
+                if standardize_data:
+                    endog_sds = self.data_sds[:num_endog]
+                    W = np.diag(self.data_sds[num_endog:])
+                    pcc = []
+                    for i, v in enumerate(prior_coeff_cov):
+                        if v is None:
+                            pass
+                        else:
+                            v = np.asarray(v)
+                            v = W @ v @ W / endog_sds[i] ** 2
 
-                prior_coeff_cov = pcc
+                        pcc.append(v)
+
+                    prior_coeff_cov = pcc
+
+        self.zellner_g = zellner_g
 
         if prior_err_var_shape is None:
             prior_err_var_shape = [None] * num_endog
@@ -682,9 +687,6 @@ class BayesianVAR:
 
                     pevs.append(v)
 
-        if zellner_g is None:
-            zellner_g = [None] * num_endog
-
         # Fit the model for each endogenous variable, equation by equation.
         endog_sds = self.data_sds[:num_endog]
         posteriors = []
@@ -701,7 +703,7 @@ class BayesianVAR:
                 prior_coeff_cov=prior_coeff_cov[j],
                 prior_err_var_shape=prior_err_var_shape[j],
                 prior_err_var_scale=prior_err_var_scale[j],
-                zellner_g=zellner_g[j],
+                zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index
             )
             prior = mod.prior
