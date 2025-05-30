@@ -321,11 +321,12 @@ class BayesianVAR:
                 raise ValueError(
                     "The number of endogenous variables needs to be at least 2."
                 )
-            if num_rows <= num_endog:
-                raise ValueError(
-                    "The number of endogenous variables cannot exceed the number "
-                    "of observations."
-                )
+            if not for_forecasting:
+                if num_rows <= num_endog:
+                    raise ValueError(
+                        "The number of endogenous variables cannot exceed the number "
+                        "of observations."
+                    )
 
         if not for_forecasting:
             time_offset = 0
@@ -392,7 +393,10 @@ class BayesianVAR:
                     self.num_seasonal_harmonics = h
                     time_polynomial.append(ft)
 
-            time_polynomial = np.concatenate(time_polynomial, axis=1)
+            if time_polynomial:
+                time_polynomial = np.concatenate(time_polynomial, axis=1)
+            else:
+                time_polynomial = None
         else:
             time_polynomial = None
 
