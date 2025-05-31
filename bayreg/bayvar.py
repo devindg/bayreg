@@ -32,7 +32,7 @@ def cumulative_sum(arr):
     return cuml_sum
 
 
-# @njit(cache=True)
+@njit(cache=True)
 def var_forecast(
         data: np.ndarray,
         ar_order: int,
