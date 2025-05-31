@@ -32,7 +32,7 @@ def cumulative_sum(arr):
     return cuml_sum
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def var_forecast(
         data: np.ndarray,
         ar_order: int,
@@ -366,16 +366,21 @@ class BayesianVAR:
         if add_intercept or add_trend or add_seasonal:
             time_polynomial = []
             if add_intercept:
-                if not first_difference:
+                if first_difference or standardize_data:
+                    pass
+                else:
                     time_polynomial.append(np.ones((num_rows, 1)))
             if add_trend:
-                (
-                    time_polynomial
-                    .append(
-                        np.arange(num_rows)
-                        .reshape(num_rows, 1) + time_offset
+                if first_difference and standardize_data:
+                    pass
+                else:
+                    (
+                        time_polynomial
+                        .append(
+                            np.arange(num_rows)
+                            .reshape(num_rows, 1) + time_offset
+                        )
                     )
-                )
             if add_seasonal:
                 if periodicity > 1:
                     if num_seasonal_harmonics == 0:
@@ -437,8 +442,6 @@ class BayesianVAR:
             # used for forecasting. We just need to remove the
             # intercept if it's present, since standardizing
             # will wipe out all constants.
-            non_intercept_cols = ~np.all(data == 1, axis=0)
-            data = data[:, non_intercept_cols]
             if not for_forecasting:
                 self.data_means = np.mean(data, axis=0)
                 self.data_sds = np.std(data, axis=0, ddof=1)
