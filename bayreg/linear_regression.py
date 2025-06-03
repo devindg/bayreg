@@ -12,6 +12,7 @@ from ..bayreg.model_assessment.performance import (
     r_squared_classic,
     watanabe_akaike,
 )
+from sklearn.preprocessing import StandardScaler
 
 
 def valid_design_matrix(
@@ -19,7 +20,8 @@ def valid_design_matrix(
         const_tol: float = 1e-6
 ):
     x = np.array(regress_design_matrix)
-    cols = [j for j in range(x.shape[1])]
+    num_obs, num_pred = x.shape
+    cols = [j for j in range(num_pred)]
 
     # Initialize valid columns
     valid_cols = cols
@@ -65,7 +67,9 @@ def valid_design_matrix(
 
             valid_cols = [j for j in valid_cols if j not in non_intercept_const_cols]
 
-    return x[:, valid_cols], valid_cols
+    x = x[:, valid_cols]
+
+    return x, valid_cols, intercept_index
 
 
 def default_zellner_g(x: np.ndarray) -> float:
@@ -81,14 +85,11 @@ def zellner_precision(
 ) -> np.ndarray:
     num_coeff = x.shape[1]
     if num_coeff > 1:
-        x_means = np.mean(x, axis=0)
-        x_sds = np.std(x, axis=0, ddof=1)
-        x_sds[x_sds <= 1e-6] = 1.
-        x = (x - x_means[np.newaxis, :]) / x_sds[np.newaxis, :]
-        variable_cols = ~np.all(x == 0, axis=0)
-        k_z = x[:, variable_cols].shape[1]
+        x_z = StandardScaler().fit_transform(x)
+        variable_cols = ~np.all(x_z == 0, axis=0)
+        k_z = x_z[:, variable_cols].shape[1]
         eig_vals = np.linalg.eigvalsh(
-            (x.T @ x)[np.ix_(variable_cols, variable_cols)]
+            (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
         )
         eig_cond_index = np.sqrt(np.max(eig_vals) / eig_vals)
         eig_cond_index = np.nan_to_num(eig_cond_index, nan=np.inf)
@@ -97,11 +98,11 @@ def zellner_precision(
             w = 0
         else:
             det_sign, log_det = np.linalg.slogdet(
-                (x.T @ x)[np.ix_(variable_cols, variable_cols)]
+                (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
             )
             avg_determ = (det_sign * np.exp(log_det)) ** (1 / k_z)
             avg_trace = np.trace(
-                (x.T @ x)[np.ix_(variable_cols, variable_cols)]
+                (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
             ) / k_z
             w = avg_determ / avg_trace
     else:
@@ -180,7 +181,7 @@ class ConjugateBayesianLinearRegression:
             self,
             response: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
             predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
-            seed: int = None,
+            seed: int = 42,
     ):
         """
 
@@ -189,152 +190,35 @@ class ConjugateBayesianLinearRegression:
         :param seed:
         """
 
+        self.response = response
+        self.predictors = predictors
         self.response_type = type(response)
         self.predictors_type = type(predictors)
+        self.valid_predictors = None
+        self.has_intercept = None
+        self.intercept_index = None
         self.response_index = None
+        self.response_name = None
+        self.num_obs = None
+        self.num_coeff = None
+        self.num_predictors = None
         self.predictors_names = None
-
-        # CHECK AND PREPARE RESPONSE DATA
-        # -- dimension and null/inf checks
-        if not isinstance(response, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)):
-            raise TypeError(
-                "The response array must be a Numpy array, list, tuple, Pandas Series, \n"
-                "or Pandas DataFrame."
-            )
-        else:
-            if isinstance(response, (list, tuple)):
-                resp = np.asarray(response, dtype=np.float64)
-            else:
-                resp = response.copy()
-
-            if isinstance(response, (pd.Series, pd.DataFrame)):
-                if isinstance(response, pd.DataFrame):
-                    self.response_name = response.columns.tolist()
-                elif isinstance(response, pd.Series):
-                    self.response_name = [response.name]
-
-                self.response_index = response.index
-                resp = resp.to_numpy()
-
-        if resp.ndim not in (1, 2):
-            raise ValueError("The response array must have dimension 1 or 2.")
-        elif resp.ndim == 1:
-            resp = resp.reshape(-1, 1)
-        else:
-            if all(i > 1 for i in resp.shape):
-                raise ValueError(
-                    "The response array must have shape (1, n) or (n, 1), "
-                    "where n is the number of observations. Both the row and column "
-                    "count exceed 1."
-                )
-            else:
-                resp = resp.reshape(-1, 1)
-
-        if np.any(np.isnan(resp)):
-            raise ValueError("The response array cannot have null values.")
-        if np.any(np.isinf(resp)):
-            raise ValueError("The response array cannot have Inf and/or -Inf values.")
-
-        self.response = resp
-        self.num_obs = resp.shape[0]
-        if self.response_index is None:
-            self.response_index = np.arange(resp.shape[0])
-
-        # CHECK AND PREPARE PREDICTORS DATA
-        if not isinstance(
-                predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
-        ):
-            raise TypeError(
-                "The predictors array must be a Numpy array, list, tuple, Pandas Series, \n"
-                "or Pandas DataFrame."
-            )
-        else:
-            if isinstance(predictors, (list, tuple)):
-                pred = np.asarray(predictors, dtype=np.float64)
-            else:
-                pred = predictors.copy()
-
-            # -- check if response and predictors are same data type.
-            if isinstance(response, (np.ndarray, list, tuple)) and not isinstance(
-                    pred, (np.ndarray, list, tuple)
-            ):
-                raise TypeError(
-                    "The response array provided is a NumPy array, list, or tuple, but the predictors "
-                    "array is not. Object types must match."
-                )
-
-            if isinstance(response, (pd.Series, pd.DataFrame)) and not isinstance(
-                    pred, (pd.Series, pd.DataFrame)
-            ):
-                raise TypeError(
-                    "The response array provided is a Pandas Series/DataFrame, but the predictors "
-                    "array is not. Object types must match."
-                )
-
-            # -- get predictor names if a Pandas object
-            if isinstance(pred, (pd.Series, pd.DataFrame)):
-                if not np.all(pred.index == response.index):
-                    raise ValueError("The response and predictors indexes must match.")
-
-                if isinstance(pred, pd.DataFrame):
-                    self.predictors_names = pred.columns.tolist()
-                elif isinstance(pred, pd.Series):
-                    self.predictors_names = [pred.name]
-
-                pred = pred.to_numpy()
-
-        # -- dimension and null/inf checks
-        if pred.ndim not in (1, 2):
-            raise ValueError("The predictors array must have dimension 1 or 2.")
-        elif pred.ndim == 1:
-            pred = pred.reshape(-1, 1)
-        else:
-            pass
-
-        if np.any(np.isnan(pred)):
-            raise ValueError("The predictors array cannot have null values.")
-        if np.any(np.isinf(pred)):
-            raise ValueError("The predictors array cannot have Inf and/or -Inf values.")
-        # -- conformable number of observations
-        if pred.shape[0] != self.num_obs:
-            raise ValueError(
-                "The number of observations in the predictors array must match "
-                "the number of observations in the response array."
-            )
-
-        # -- check if design matrix has a constant
-        has_const_ = np.all(pred == 1, axis=0)
-        if np.any(has_const_):
-            self.has_constant = True
-            self.constant_index = np.argwhere(has_const_)[0][0]
-        else:
-            self.has_constant = False
-            self.constant_index = None
-
-        self.predictors = pred
-        self.num_coeff = pred.shape[1]
-        self.num_predictors = self.num_coeff - self.has_constant
-        # Create variable names for predictors, if applicable
-        if self.predictors_names is None:
-            self.predictors_names = [f"x{i + 1}" for i in range(self.num_coeff)]
-
-        # -- warn about model stability if the number of predictors exceeds number of observations
-        if self.num_coeff > self.num_obs:
-            warnings.warn(
-                "The number of predictors exceeds the number of observations. "
-                "Results will be sensitive to choice of priors."
-            )
-
-        if seed is not None:
-            if not isinstance(seed, int):
-                raise TypeError("seed must be an integer.")
-            if not 0 < seed < 2 ** 32 - 1:
-                raise ValueError("seed must be an integer between 0 and 2**32 - 1.")
-            self.seed = seed
-
         self.prior = None
         self.posterior = None
         self.post_pred_dist = None
+        self.standardize_data = None
+        self.data_scaler = None
+
+        # Define desired index for intercept when data are standardized
+        self._intercept_index = 0
+
+        if not isinstance(seed, int):
+            raise TypeError("seed must be an integer.")
+
+        if not 0 < seed < 2 ** 32 - 1:
+            raise ValueError("seed must be an integer between 0 and 2**32 - 1.")
+
+        self.seed = seed
 
     def _posterior_exists_check(self):
         if self.posterior is None:
@@ -354,19 +238,209 @@ class ConjugateBayesianLinearRegression:
 
         return
 
+    def _process_response(
+            self,
+            response
+    ):
+        y = response
+
+        if not isinstance(y, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)):
+            raise TypeError(
+                "The response array must be a Numpy array, list, tuple, Pandas Series, \n"
+                "or Pandas DataFrame."
+            )
+        else:
+            if isinstance(y, (list, tuple)):
+                y = np.asarray(y, dtype=np.float64)
+            else:
+                y = y.copy()
+
+            if isinstance(y, (pd.Series, pd.DataFrame)):
+                if isinstance(y, pd.DataFrame):
+                    self.response_name = y.columns.tolist()
+                elif isinstance(y, pd.Series):
+                    self.response_name = [y.name]
+
+                self.response_index = y.index
+                y = y.to_numpy()
+
+        if y.ndim not in (1, 2):
+            raise ValueError("The response array must have dimension 1 or 2.")
+        elif y.ndim == 1:
+            y = y.reshape(-1, 1)
+        else:
+            if all(i > 1 for i in y.shape):
+                raise ValueError(
+                    "The response array must have shape (1, n) or (n, 1), "
+                    "where n is the number of observations. Both the row and column "
+                    "count exceed 1."
+                )
+            else:
+                y = y.reshape(-1, 1)
+
+        if np.any(np.isnan(y)):
+            raise ValueError("The response array cannot have null values.")
+
+        if np.any(np.isinf(y)):
+            raise ValueError("The response array cannot have Inf and/or -Inf values.")
+
+        self.num_obs = y.shape[0]
+
+        if self.response_index is None:
+            self.response_index = np.arange(y.shape[0])
+
+        return y
+
+    def _process_predictors(
+            self,
+            predictors
+    ):
+        x = predictors
+
+        if not isinstance(
+                x, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
+        ):
+            raise TypeError(
+                "The predictors array must be a Numpy array, list, tuple, Pandas Series, "
+                "or Pandas DataFrame."
+            )
+        else:
+            if isinstance(x, (list, tuple)):
+                x = np.asarray(x, dtype=np.float64)
+            else:
+                x = x.copy()
+
+            # Check if response and predictors are the same data type.
+            if isinstance(x, (np.ndarray, list, tuple)) and not isinstance(
+                    x, (np.ndarray, list, tuple)
+            ):
+                raise TypeError(
+                    "The response array provided is a NumPy array, list, or tuple, but the predictors "
+                    "array is not. Object types must match."
+                )
+
+            if isinstance(x, (pd.Series, pd.DataFrame)) and not isinstance(
+                    x, (pd.Series, pd.DataFrame)
+            ):
+                raise TypeError(
+                    "The response array provided is a Pandas Series/DataFrame, but the predictors "
+                    "array is not. Object types must match."
+                )
+
+            # Get predictor names if a Pandas object
+            if isinstance(x, (pd.Series, pd.DataFrame)):
+                if not np.all(x.index == x.index):
+                    raise ValueError("The response and predictors indexes must match.")
+
+                if isinstance(x, pd.DataFrame):
+                    self.predictors_names = x.columns.tolist()
+                elif isinstance(x, pd.Series):
+                    self.predictors_names = [x.name]
+
+                x = x.to_numpy()
+            else:
+                self.predictors_names = [f"x{i + 1}" for i in range(x.shape[1])]
+
+        # Check dimensions
+        if x.ndim not in (1, 2):
+            raise ValueError("The predictors array must have dimension 1 or 2.")
+        elif x.ndim == 1:
+            x = x.reshape(-1, 1)
+
+        # Check for nan and inf values
+        if np.any(np.isnan(x)):
+            raise ValueError("The predictors array cannot have null values.")
+
+        if np.any(np.isinf(x)):
+            raise ValueError("The predictors array cannot have Inf and/or -Inf values.")
+
+        # Check if the number of observations conforms to response
+        if x.shape[0] != self.num_obs:
+            raise ValueError(
+                "The number of observations in the predictors array must match "
+                "the number of observations in the response array."
+            )
+
+        # Get valid design matrix.
+        x, valid_cols, intercept_index = valid_design_matrix(x)
+
+        # Warn if no intercept is present
+        if intercept_index is None:
+            warnings.warn(
+                "No intercept was found in the design matrix. Ignore this warning if this is by design "
+                "(e.g., predictors are centered or standardized). Otherwise, add a column of ones to "
+                "the predictors array."
+            )
+
+        self.valid_predictors = valid_cols
+
+        if intercept_index is not None:
+            self.has_intercept = True
+            self.intercept_index = intercept_index
+        else:
+            self.has_intercept = False
+            self.intercept_index = None
+
+        self.num_coeff = x.shape[1]
+        self.predictors_names = [
+            p
+            for i, p in enumerate(self.predictors_names)
+            if i in valid_cols
+        ]
+        self.num_predictors = self.num_coeff - int(self.has_intercept)
+
+        # Warn about model stability if the number of predictors exceeds the number of observations
+        if self.num_coeff > self.num_obs:
+            warnings.warn(
+                "The number of predictors exceeds the number of observations. "
+                "Results will be sensitive to choice of priors."
+            )
+
+        return x
+
+    def prepare_data(
+            self,
+            standardize_data: bool
+    ):
+        y = self._process_response(response=self.response)
+        x = self._process_predictors(predictors=self.predictors)
+
+        # Store untransformed versions of response and predictors
+        self.response = y
+        self.predictors = x
+
+        if standardize_data:
+            if self.has_intercept:
+                ss = StandardScaler()
+                x = np.delete(x, self.intercept_index, axis=1)
+                # Reconfigure position of intercept to comply with defined
+                # index _intercept_index, which is used under standardization
+                self.predictors = np.insert(x, self._intercept_index, 1., axis=1)
+            else:
+                ss = StandardScaler(with_mean=False)
+
+            data = np.c_[y, x]
+            data = ss.fit_transform(data)
+            self.data_scaler = ss
+            y, x = data[:, 0:1], data[:, 1:]
+
+        return y, x
+
     def fit(
             self,
             num_post_samp: int = 1000,
+            standardize_data: bool = True,
             prior_coeff_mean: Union[list, tuple, np.ndarray] = None,
             prior_coeff_cov: Union[list, tuple, np.ndarray] = None,
             prior_err_var_shape: Union[int, float] = None,
             prior_err_var_scale: Union[int, float] = None,
             zellner_g: Union[int, float] = None,
-            max_mat_cond_index: Union[int, float] = 30.
+            max_mat_cond_index: Union[int, float] = 30.,
     ) -> Posterior:
         """
 
         :param num_post_samp:
+        :param standardize_data:
         :param prior_coeff_mean:
         :param prior_coeff_cov:
         :param prior_err_var_shape:
@@ -376,8 +450,13 @@ class ConjugateBayesianLinearRegression:
         :return:
         """
 
-        y, x, n, k = self.response, self.predictors, self.num_obs, self.num_coeff
-        sd_y = np.std(y, ddof=1)
+        self.standardize_data = standardize_data
+        y, x = self.prepare_data(standardize_data=standardize_data)
+        n, k = self.num_obs, self.num_coeff
+
+        # Get SVD of design matrix
+        U, S, Vt = svd(x)
+        StS = S.T @ S
 
         # Check shape prior for error variance
         if prior_err_var_shape is not None:
@@ -403,33 +482,13 @@ class ConjugateBayesianLinearRegression:
             else:
                 raise ValueError(
                     "prior_err_var_scale must be a strictly positive integer or float."
+                    "prior_err_var_scale must be a strictly positive integer or float."
                 )
         else:
-            if np.isnan(sd_y):
-                prior_err_var_scale = 0.01
-            else:
-                prior_err_var_scale = (0.01 * sd_y) ** 2
-
-        # Check if design matrix has more than one constant. If so, drop redundant columns.
-        x, valid_cols = valid_design_matrix(x)
-        if x.shape[1] != self.num_coeff:
-            warnings.warn(
-                "No column in the design matrix can be all zeros. "
-                "All-zero columns will be dropped. Priors for the "
-                "coefficient mean and covariance will be adjusted "
-                "accordingly."
-            )
-            self.predictors = x
-            self.num_coeff = x.shape[1]
-            self.predictors_names = [
-                p
-                for i, p in enumerate(self.predictors_names)
-                if i in valid_cols
-            ]
-
-        # Get SVD of design matrix
-        U, S, Vt = svd(x)
-        StS = S.T @ S
+            ss = StandardScaler()
+            ss.fit(y)
+            sd_y = ss.scale_[0]
+            prior_err_var_scale = (0.01 * sd_y) ** 2
 
         # Check prior mean for regression coefficients
         if prior_coeff_mean is not None:
@@ -443,7 +502,7 @@ class ConjugateBayesianLinearRegression:
                 else:
                     prior_coeff_mean = prior_coeff_mean.astype(float)
 
-                prior_coeff_mean = prior_coeff_mean[valid_cols]
+                prior_coeff_mean = prior_coeff_mean[self.valid_predictors]
 
                 if prior_coeff_mean.ndim not in (1, 2):
                     raise ValueError("prior_coeff_mean must have dimension 1 or 2.")
@@ -466,7 +525,9 @@ class ConjugateBayesianLinearRegression:
             prior_coeff_mean = np.zeros((self.num_coeff, 1))
 
         # Check prior covariance matrix for regression coefficients
+        cov_provided = False
         if prior_coeff_cov is not None:
+            cov_provided = True
             if not isinstance(prior_coeff_cov, (list, tuple, np.ndarray)):
                 raise TypeError(
                     "prior_coeff_cov must be a list, tuple, or NumPy array."
@@ -480,7 +541,9 @@ class ConjugateBayesianLinearRegression:
                     prior_coeff_cov = np.atleast_2d(prior_coeff_cov.astype(float))
 
                 # noinspection PyTypeChecker
-                prior_coeff_cov = prior_coeff_cov[np.ix_(valid_cols, valid_cols)]
+                prior_coeff_cov = prior_coeff_cov[
+                    np.ix_(self.valid_predictors, self.valid_predictors)
+                ]
 
                 if prior_coeff_cov.ndim != 2:
                     raise ValueError("prior_coeff_cov must have dimension 2.")
@@ -541,6 +604,58 @@ class ConjugateBayesianLinearRegression:
             zellner_g=zellner_g,
         )
 
+        # Scale priors if standardization is specified
+        if standardize_data:
+            scales = self.data_scaler.scale_
+            sd_y, sd_x = scales[0], scales[1:]
+            W = np.diag(sd_x)
+            prior_err_var_scale = prior_err_var_scale / sd_y ** 2
+
+            if self.has_intercept:
+                # Standardizing reparameterizes the intercept.
+                # Effectively, the implied intercept turns into a
+                # parameter with a vague prior. This will be enforced
+                # with a zero-mean and high variance.
+
+                # Reconfigure the prior by moving the intercept prior to the beginning
+                pcm = np.delete(prior_coeff_mean, self.intercept_index, axis=0)
+                pcm = np.insert(pcm, self._intercept_index, 0, axis=0)
+                self.prior = self.prior._replace(prior_coeff_mean=pcm)
+
+                # Now delete the intercept prior for estimation
+                prior_coeff_mean = np.delete(
+                    pcm,
+                    self._intercept_index,
+                    axis=0
+                )
+
+                if cov_provided:
+                    # Reconfigure the prior by moving the intercept prior to the beginning
+                    pcc = np.delete(prior_coeff_cov, self.intercept_index, axis=0)
+                    pcc = np.delete(pcc, self.intercept_index, axis=1)
+                    pcc = np.insert(pcc, self._intercept_index, 0, axis=0)
+                    pcc = np.insert(pcc, self._intercept_index, 0, axis=1)
+                    pcc[self._intercept_index, self._intercept_index] = 1e9
+                    self.prior = self.prior._replace(prior_coeff_cov=pcc)
+
+                    # Now delete the intercept prior for estimation
+                    mask = [
+                        True for i in range(self.num_coeff)
+                        if i != self._intercept_index
+                    ]
+                    prior_coeff_cov = pcc[np.ix_(mask, mask)]
+                else:
+                    pcc = np.zeros((self.num_coeff, self.num_coeff))
+                    pcc[self._intercept_index, self._intercept_index] = 1e9
+                    pcc[1:, 1:] = prior_coeff_cov
+                    self.prior = self.prior._replace(prior_coeff_cov=pcc)
+
+            prior_coeff_mean = W @ prior_coeff_mean / sd_y
+
+            if cov_provided:
+                prior_coeff_cov = W @ prior_coeff_cov @ W / sd_y ** 2
+                prior_coeff_prec = mat_inv(prior_coeff_cov)
+
         # Posterior values for coefficient mean, coefficient covariance matrix,
         # error variance shape, and error variance scale.
 
@@ -589,18 +704,7 @@ class ConjugateBayesianLinearRegression:
                 post_err_var_scale / post_err_var_shape * svd_ninvg_post_coeff_cov
         )
 
-        # Check if the covariance matrix corresponding to the coefficients' marginal
-        # posterior distribution is ill-conditioned.
-        if not is_positive_definite(post_coeff_cov):
-            raise ValueError(
-                "The covariance matrix corresponding to the coefficients' "
-                "marginal posterior distribution (multivariate Student-t) "
-                "is not positive definite. Try scaling the predictors, the "
-                "response, or both to eliminate the possibility of an "
-                "ill-conditioned matrix."
-            )
-
-        post_coeff = np.empty((num_post_samp, self.num_coeff))
+        post_coeff = np.empty((num_post_samp, x.shape[1]))
         rng = np.random.default_rng(self.seed)
         for s in range(num_post_samp):
             cond_post_coeff_cov = post_err_var[s][0] * svd_ninvg_post_coeff_cov
@@ -612,9 +716,46 @@ class ConjugateBayesianLinearRegression:
         if post_coeff.ndim == 1:
             post_coeff = post_coeff.reshape((num_post_samp, Vt.shape[0]))
 
-        # Back-transform parameters from SVD to original scale
+        # Back-transform parameters from SVD to the original scale
         post_coeff_cov = Vt.T @ post_coeff_cov @ Vt
         post_coeff = post_coeff @ Vt
+
+        if standardize_data:
+            scales = self.data_scaler.scale_
+            means = self.data_scaler.mean_
+            m_y, m_x = means[0], means[1:]
+            sd_y, sd_x = scales[0], scales[1:]
+            W = np.diag(1 / sd_x)
+            post_coeff_mean = sd_y * (W @ post_coeff_mean)
+            post_coeff_cov = sd_y ** 2 * (W @ post_coeff_cov @ W)
+            post_coeff = sd_y * (post_coeff @ W)
+            post_err_var_scale = sd_y ** 2 * post_err_var_scale
+            post_err_var = sd_y ** 2 * post_err_var
+            ninvg_post_coeff_cov = sd_y ** 2 * (W @ ninvg_post_coeff_cov @ W)
+
+            if self.has_intercept:
+                x = self.predictors
+                post_intercept_mean = (
+                    np.atleast_2d(
+                        m_y - post_coeff_mean.flatten() @ m_x
+                    )
+                )
+                post_coeff_mean = np.insert(
+                    post_coeff_mean,
+                    self._intercept_index,
+                    post_intercept_mean,
+                    axis=0
+                )
+                post_intercept = m_y - post_coeff @ m_x
+                post_coeff = np.insert(
+                    post_coeff,
+                    self._intercept_index,
+                    post_intercept,
+                    axis=1
+                )
+                prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
+                ninvg_post_coeff_cov = mat_inv(x.T @ x + prior_coeff_prec)
+                post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
 
         self.posterior = Posterior(
             num_post_samp=num_post_samp,
@@ -631,7 +772,7 @@ class ConjugateBayesianLinearRegression:
 
     def predict(
             self,
-            predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame],
+            predictors: Union[np.ndarray, list, tuple, pd.Series, pd.DataFrame, None] = None,
             mean_only: bool = False,
     ):
         """
@@ -640,82 +781,45 @@ class ConjugateBayesianLinearRegression:
         :param mean_only:
         :return:
         """
-
-        # -- check if object type is valid
-        if not isinstance(
-                predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
-        ):
-            raise TypeError(
-                "The predictors array must be a NumPy array, list, tuple, Pandas Series, \n"
-                "or Pandas DataFrame."
-            )
+        if predictors is None:
+            x = self.predictors
         else:
-            if isinstance(predictors, (list, tuple)):
-                x = np.asarray(predictors, dtype=np.float64)
-            else:
-                x = predictors.copy()
-            # Check and prepare predictor data
-            # -- check if data types match across instantiated predictors and predictors
-            if x.shape == self.predictors.shape:
-                if np.allclose(x, self.predictors):
-                    pass
-            else:
-                if not isinstance(x, self.predictors_type):
-                    raise TypeError(
-                        "Object type for predictors does not match the predictors object type "
-                        "instantiated with ConjugateBayesianLinearRegression."
-                    )
-
-            # -- if Pandas type, grab index and column names
-            if isinstance(x, (pd.Series, pd.DataFrame)):
-                if not isinstance(x.index, type(self.response_index)):
-                    warnings.warn(
-                        "Index type for predictors does not match the predictors index type "
-                        "instantiated with ConjugateBayesianLinearRegression."
-                    )
-
-                if isinstance(x, pd.DataFrame):
-                    predictors_names = x.columns.tolist()
-                elif isinstance(x, pd.Series):
-                    predictors_names = [x.name]
-
-                # noinspection PyUnboundLocalVariable
-                if not all(
-                        self.predictors_names[i] == predictors_names[i]
-                        for i in range(self.num_coeff)
-                ):
-                    warnings.warn(
-                        "The order and/or names of the columns in predictors do not match "
-                        "the order and names in the predictors array instantiated "
-                        "with the ConjugateBayesianLinearRegression class."
-                    )
-
-                x = x.to_numpy()
-
-            # -- dimensions
-            if x.ndim not in (1, 2):
-                raise ValueError("The predictors array must have dimension 1 or 2.")
-            elif x.ndim == 1:
-                x = x.reshape(-1, 1)
-            else:
-                pass
-
-            if np.isnan(x).any():
-                raise ValueError("The predictors array cannot have null values.")
-            if np.isinf(x).any():
-                raise ValueError(
-                    "The predictors array cannot have Inf and/or -Inf values."
+            # Check if the object type is valid
+            if not isinstance(
+                    predictors, (np.ndarray, list, tuple, pd.Series, pd.DataFrame)
+            ):
+                raise TypeError(
+                    "The predictors array must be a NumPy array, list, tuple, Pandas Series, \n"
+                    "or Pandas DataFrame."
                 )
+            else:
+                if isinstance(predictors, (list, tuple)):
+                    x = np.asarray(predictors, dtype=np.float64)
+                else:
+                    x = predictors.copy()
 
-            if x.shape[1] != self.num_coeff:
-                raise ValueError(
-                    "The number of columns in predictors must match the "
-                    "number of columns in the predictor/design matrix "
-                    "instantiated with the ConjugateBayesianLinearRegression class. "
-                    "Ensure that the number and order of predictors matches "
-                    "the number and order of predictors in the design matrix "
-                    "used for model fitting."
-                )
+                # If Pandas type, grab index and column names
+                if isinstance(x, (pd.Series, pd.DataFrame)):
+                    x = x.to_numpy()
+
+                # Check dimensions
+                if x.ndim not in (1, 2):
+                    raise ValueError("The predictors array must have dimension 1 or 2.")
+                elif x.ndim == 1:
+                    x = x.reshape(-1, 1)
+
+                if np.isnan(x).any():
+                    raise ValueError("The predictors array cannot have null values.")
+
+                if np.isinf(x).any():
+                    raise ValueError(
+                        "The predictors array cannot have Inf and/or -Inf values."
+                    )
+                x = x[:, self.valid_predictors]
+
+        if self.standardize_data and self.has_intercept:
+            x = np.delete(x, self.intercept_index, axis=1)
+            x = np.insert(x, self._intercept_index, 1., axis=1)
 
         self._posterior_exists_check()
         n = predictors.shape[0]
@@ -748,7 +852,7 @@ class ConjugateBayesianLinearRegression:
 
     def posterior_predictive_distribution(self):
         self._posterior_exists_check()
-        self.post_pred_dist = self.predict(self.predictors)
+        self.post_pred_dist = self.predict()
 
         return self.post_pred_dist
 
@@ -901,3 +1005,4 @@ class ConjugateBayesianLinearRegression:
             leverage_predictors=leverage_predictors,
             leverage_prior_coeff_prec=leverage_prior_coeff_prec
         )
+
