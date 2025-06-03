@@ -3,9 +3,9 @@ from typing import NamedTuple, Union
 import numpy as np
 import pandas as pd
 from scipy.stats import invgamma, t
-from ..bayreg.linear_algebra.array_checks import is_positive_definite, is_symmetric
-from ..bayreg.linear_algebra.array_operations import mat_inv, svd
-from ..bayreg.model_assessment.performance import (
+from bayreg.linear_algebra.array_checks import is_positive_semidefinite, is_symmetric
+from bayreg.linear_algebra.array_operations import mat_inv, svd
+from bayreg.model_assessment.performance import (
     oos_error,
     mean_squared_prediction_error,
     r_squared,
@@ -85,32 +85,50 @@ def zellner_precision(
 ) -> np.ndarray:
     num_coeff = x.shape[1]
     if num_coeff > 1:
-        x_z = StandardScaler().fit_transform(x)
+        ss = StandardScaler()
+        x_z = ss.fit_transform(x)
         variable_cols = ~np.all(x_z == 0, axis=0)
-        k_z = x_z[:, variable_cols].shape[1]
-        eig_vals = np.linalg.eigvalsh(
-            (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
-        )
+        xtx = (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
+        k_z = x_z.shape[1]
+        eig_vals = np.linalg.eigvalsh(xtx)
         eig_cond_index = np.sqrt(np.max(eig_vals) / eig_vals)
         eig_cond_index = np.nan_to_num(eig_cond_index, nan=np.inf)
 
         if np.any(eig_cond_index > max_mat_cond_index):
             w = 0
         else:
-            det_sign, log_det = np.linalg.slogdet(
-                (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
-            )
+            det_sign, log_det = np.linalg.slogdet(xtx)
             avg_determ = (det_sign * np.exp(log_det)) ** (1 / k_z)
-            avg_trace = np.trace(
-                (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
-            ) / k_z
+            avg_trace = np.trace(xtx) / k_z
             w = avg_determ / avg_trace
-    else:
-        w = 1
 
-    prior_coeff_prec = (
-            1 / zellner_g * (w * x.T @ x + (1 - w) * np.diag(np.diag(x.T @ x)))
-    )
+        Q = np.diag(ss.scale_[variable_cols])
+        xtx = Q @ xtx @ Q
+        prior_coeff_prec = (
+                1 / zellner_g * (w * xtx + (1 - w) * np.diag(np.diag(xtx)))
+        )
+
+        # If a constant is present, insert an approximately flat
+        # prior for the intercept.
+        if np.sum(~variable_cols) == 1:
+            prior_coeff_prec = np.insert(
+                prior_coeff_prec,
+                ~variable_cols,
+                0,
+                axis=0
+            )
+            prior_coeff_prec = np.insert(
+                prior_coeff_prec,
+                ~variable_cols,
+                0,
+                axis=1
+            )
+            prior_coeff_prec[~variable_cols, ~variable_cols] = 1 / 1e6
+
+    else:
+        prior_coeff_prec = (
+                1 / zellner_g * x.T @ x
+        )
 
     return prior_coeff_prec
 
@@ -551,7 +569,7 @@ class ConjugateBayesianLinearRegression:
                     raise ValueError(
                         f"prior_coeff_cov must have shape ({self.num_coeff}, {self.num_coeff})."
                     )
-                if not is_positive_definite(prior_coeff_cov):
+                if not is_positive_semidefinite(prior_coeff_cov):
                     raise ValueError(
                         "prior_coeff_cov must be a positive definite matrix."
                     )
@@ -635,7 +653,7 @@ class ConjugateBayesianLinearRegression:
                     pcc = np.delete(pcc, self.intercept_index, axis=1)
                     pcc = np.insert(pcc, self._intercept_index, 0, axis=0)
                     pcc = np.insert(pcc, self._intercept_index, 0, axis=1)
-                    pcc[self._intercept_index, self._intercept_index] = 1e9
+                    pcc[self._intercept_index, self._intercept_index] = 1e6
                     self.prior = self.prior._replace(prior_coeff_cov=pcc)
 
                     # Now delete the intercept prior for estimation
@@ -646,7 +664,7 @@ class ConjugateBayesianLinearRegression:
                     prior_coeff_cov = pcc[np.ix_(mask, mask)]
                 else:
                     pcc = np.zeros((self.num_coeff, self.num_coeff))
-                    pcc[self._intercept_index, self._intercept_index] = 1e9
+                    pcc[self._intercept_index, self._intercept_index] = 1e6
                     pcc[1:, 1:] = prior_coeff_cov
                     self.prior = self.prior._replace(prior_coeff_cov=pcc)
 
@@ -1005,4 +1023,3 @@ class ConjugateBayesianLinearRegression:
             leverage_predictors=leverage_predictors,
             leverage_prior_coeff_prec=leverage_prior_coeff_prec
         )
-
