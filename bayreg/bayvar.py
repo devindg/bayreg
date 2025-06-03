@@ -5,9 +5,7 @@ from .linear_regression import ConjugateBayesianLinearRegression as CBLR
 from .linear_regression import (
     valid_design_matrix,
     default_zellner_g,
-    zellner_precision,
-    Prior,
-    Posterior
+    zellner_precision
 )
 from ..bayreg.linear_algebra.array_operations import mat_inv
 from numba import njit, vectorize, float64, prange
@@ -37,11 +35,10 @@ def var_forecast(
         data: np.ndarray,
         ar_order: int,
         first_difference: bool,
+        has_drift: bool,
         posterior: tuple,
         mean_only: bool,
         last_endog: np.ndarray,
-        endog_means: np.ndarray,
-        predictor_means: np.ndarray,
         seed: int
 ):
     np.random.seed(seed)
@@ -49,8 +46,13 @@ def var_forecast(
     num_lag_vars = num_endog * ar_order
     horizon = data.shape[0]
     num_coeff = posterior[0].post_coeff_mean.size
-    y_lags = data[:, :num_lag_vars].T
-    z = data[:, num_lag_vars:].T
+
+    if not has_drift:
+        y_lags = data[:, :num_lag_vars].T
+        z = data[:, num_lag_vars:].T
+    else:
+        y_lags = data[:, 1:num_lag_vars + 1].T
+        z = data[:, 1 + num_lag_vars:].T
 
     if not mean_only:
         num_samp = posterior[0].post_err_var.size
@@ -73,9 +75,14 @@ def var_forecast(
                 coeffs[i, :] = posterior[i].post_coeff[s, :]
                 error_vars[i] = posterior[i].post_err_var[s, 0]
 
-            y_lag_coeffs = coeffs[:, :num_lag_vars]
-            z_coeffs = coeffs[:, num_lag_vars:]
-            drift = endog_means - coeffs @ predictor_means
+            if not has_drift:
+                y_lag_coeffs = coeffs[:, :num_lag_vars]
+                z_coeffs = coeffs[:, num_lag_vars:]
+                drift = np.zeros(num_samp)
+            else:
+                y_lag_coeffs = coeffs[:, 1:num_lag_vars + 1]
+                z_coeffs = coeffs[:, 1 + num_lag_vars:]
+                drift = coeffs[:, 0]
 
             for t in prange(horizon):
                 errors = vec_rand_norm(np.zeros_like(error_vars), error_vars ** 0.5)
@@ -104,9 +111,14 @@ def var_forecast(
         for i in prange(num_endog):
             coeffs[i, :] = posterior[i].post_coeff_mean.T
 
-        y_lag_coeffs = coeffs[:, :num_lag_vars]
-        z_coeffs = coeffs[:, num_lag_vars:]
-        drift = endog_means - coeffs @ predictor_means
+        if not has_drift:
+            y_lag_coeffs = coeffs[:, :num_lag_vars]
+            z_coeffs = coeffs[:, num_lag_vars:]
+            drift = np.zeros(num_samp)
+        else:
+            y_lag_coeffs = coeffs[:, 1:num_lag_vars + 1]
+            z_coeffs = coeffs[:, 1 + num_lag_vars:]
+            drift = coeffs[:, 0]
 
         for t in prange(horizon):
             if t == 0:
@@ -216,8 +228,7 @@ class BayesianVAR:
             add_trend: bool = False,
             add_seasonal: bool = False,
             seasonal_periodicity: int = 1,
-            num_seasonal_harmonics: int = 0,
-            standardize_data: bool = True
+            num_seasonal_harmonics: int = 0
     ):
         self.ar_order = ar_order
         self.first_difference = first_difference
@@ -226,7 +237,7 @@ class BayesianVAR:
         self.add_seasonal = add_seasonal
         self.seasonal_periodicity = seasonal_periodicity
         self.num_seasonal_harmonics = num_seasonal_harmonics
-        self.standardize_data = standardize_data
+        self.standardize_data = None
 
         """ Standardizing data simultaneously wipes out all constants and 
         implicitly re-introduces them. For example, if the model being 
@@ -280,10 +291,9 @@ class BayesianVAR:
         self.prior = None
         self.posterior = None
         self.fit_with_exog = None
-        self.data_means = None
-        self.data_sds = None
         self.zellner_g = None
         self.cross_endog_zellner_g = None
+        self._intercept_index = None
 
     def prepare_data(
             self,
@@ -299,7 +309,6 @@ class BayesianVAR:
         add_seasonal = self.add_seasonal
         periodicity = self.seasonal_periodicity
         num_seasonal_harmonics = self.num_seasonal_harmonics
-        standardize_data = self.standardize_data
         orig_num_obs = self.orig_num_obs
         last_data = self.last_data
         train_data_prepared = self.train_data_prepared
@@ -366,12 +375,12 @@ class BayesianVAR:
         if add_intercept or add_trend or add_seasonal:
             time_polynomial = []
             if add_intercept:
-                if first_difference or standardize_data:
+                if first_difference:
                     pass
                 else:
                     time_polynomial.append(np.ones((num_rows, 1)))
             if add_trend:
-                if first_difference and standardize_data:
+                if first_difference:
                     pass
                 else:
                     (
@@ -428,99 +437,19 @@ class BayesianVAR:
 
         if not for_forecasting:
             data = data[~np.any(np.isnan(data), axis=1)]
-            self.data_means = np.mean(data, axis=0)
-            self.data_sds = np.std(data, axis=0, ddof=1)
             self.num_obs = data.shape[0]
+            self.num_pred_vars = data.shape[1] - num_endog
+            self.train_data_prepared = True
         else:
             data = data[:, num_endog:]
 
-        if standardize_data:
-            # By design, the forecast() method assumes that
-            # the posterior reflects the original (non-standardized)
-            # scale of the data, which is taken care of in fit().
-            # Thus, there's no need to standardize the data
-            # used for forecasting. We just need to remove the
-            # intercept if it's present, since standardizing
-            # will wipe out all constants.
-            if not for_forecasting:
-                self.data_means = np.mean(data, axis=0)
-                self.data_sds = np.std(data, axis=0, ddof=1)
-                # If no intercept is present, don't center the
-                # data as that implicitly introduces one.
-                if self.has_drift:
-                    data = data - self.data_means[np.newaxis, :]
-                data = data / self.data_sds[np.newaxis, :]
-
-        if not for_forecasting:
-            self.num_pred_vars = data.shape[1] - num_endog
-            self.train_data_prepared = True
-
         return data
-
-    def _back_transform(
-            self,
-            obj: Union[Posterior, Prior],
-            endog_sd: float
-    ) -> Union[Posterior, Prior]:
-
-        if not self.standardize_data:
-            raise AssertionError(
-                "This method is only applicable when data has been standardized "
-                "for training the model.")
-
-        if not isinstance(obj, (Posterior, Prior)):
-            raise TypeError(
-                "The object should be a Posterior or Prior type instance."
-            )
-
-        pred_sds = self.data_sds[self.num_endog:]
-        pred_descale = np.diag(1 / pred_sds)
-
-        if isinstance(obj, Posterior):
-            obj = obj._replace(
-                post_coeff_mean=endog_sd * pred_descale @ obj.post_coeff_mean
-            )
-            obj = obj._replace(
-                post_err_var=obj.post_err_var * endog_sd ** 2
-            )
-            obj = obj._replace(
-                post_coeff=endog_sd * obj.post_coeff @ pred_descale
-            )
-            obj = obj._replace(
-                post_coeff_cov=endog_sd ** 2 * (
-                        pred_descale
-                        @ obj.post_coeff_cov
-                        @ pred_descale
-                )
-            )
-            obj = obj._replace(
-                ninvg_post_coeff_cov=endog_sd ** 2 * (
-                        pred_descale
-                        @ obj.ninvg_post_coeff_cov
-                        @ pred_descale
-                )
-            )
-        else:
-            obj = obj._replace(
-                prior_coeff_mean=endog_sd * pred_descale @ obj.prior_coeff_mean
-            )
-            obj = obj._replace(
-                prior_coeff_cov=endog_sd ** 2 * (
-                        pred_descale
-                        @ obj.prior_coeff_cov
-                        @ pred_descale
-                )
-            )
-            obj = obj._replace(
-                prior_err_var_scale=endog_sd ** 2 * obj.prior_err_var_scale
-            )
-
-        return obj
 
     def fit(self,
             endog: np.ndarray,
             exog: Union[None, np.ndarray] = None,
-            num_post_samp=1000,
+            num_post_samp: int = 1000,
+            standardize_data: bool = True,
             prior_coeff_mean: Union[tuple, None] = None,
             prior_coeff_cov: Union[tuple, None] = None,
             prior_err_var_shape: Union[tuple, None] = None,
@@ -534,7 +463,7 @@ class BayesianVAR:
         if cross_lag_endog_zellner_g_factor > 1:
             raise ValueError("cross_lag_endog_zellner_g_factor must be in (0, 1].")
 
-        standardize_data = self.standardize_data
+        self.standardize_data = standardize_data
 
         if exog is None:
             self.fit_with_exog = False
@@ -559,21 +488,6 @@ class BayesianVAR:
 
         if prior_coeff_mean is None:
             prior_coeff_mean = [np.zeros(num_pred_vars)] * num_endog
-        else:
-            if standardize_data:
-                endog_sds = self.data_sds[:num_endog]
-                W = np.diag(self.data_sds[num_endog:])
-                pcm = []
-                for i, v in enumerate(prior_coeff_mean):
-                    if v is None:
-                        pass
-                    else:
-                        v = np.asarray(v)
-                        v = v @ W / endog_sds[i]
-
-                    pcm.append(v)
-
-                prior_coeff_mean = pcm
 
         if prior_coeff_cov is None:
             """
@@ -656,21 +570,6 @@ class BayesianVAR:
             if zellner_g is None:
                 zellner_g = default_zellner_g(x=pred_vars)
 
-                if standardize_data:
-                    endog_sds = self.data_sds[:num_endog]
-                    W = np.diag(self.data_sds[num_endog:])
-                    pcc = []
-                    for i, v in enumerate(prior_coeff_cov):
-                        if v is None:
-                            pass
-                        else:
-                            v = np.asarray(v)
-                            v = W @ v @ W / endog_sds[i] ** 2
-
-                        pcc.append(v)
-
-                    prior_coeff_cov = pcc
-
         self.zellner_g = zellner_g
 
         if prior_err_var_shape is None:
@@ -678,22 +577,11 @@ class BayesianVAR:
 
         if prior_err_var_scale is None:
             prior_err_var_scale = [None] * num_endog
-        else:
-            if standardize_data:
-                endog_sds = self.data_sds[:num_endog]
-                pevs = []
-                for i, v in enumerate(prior_err_var_scale):
-                    if v is None:
-                        pass
-                    else:
-                        v = v / endog_sds[i] ** 2
-
-                    pevs.append(v)
 
         # Fit the model for each endogenous variable, equation by equation.
-        endog_sds = self.data_sds[:num_endog]
         posteriors = []
         priors = []
+        self._intercept_index = valid_design_matrix(pred_vars)[-1]
         for j in range(num_endog):
             mod = CBLR(
                 response=endog_vars[:, j],
@@ -707,16 +595,10 @@ class BayesianVAR:
                 prior_err_var_shape=prior_err_var_shape[j],
                 prior_err_var_scale=prior_err_var_scale[j],
                 zellner_g=zellner_g,
-                max_mat_cond_index=max_mat_cond_index
+                max_mat_cond_index=max_mat_cond_index,
+                standardize_data=standardize_data,
             )
             prior = mod.prior
-
-            # Back-transform the posterior if the data was
-            # standardized. The forecast() method expects this.
-            if standardize_data:
-                fit = self._back_transform(fit, endog_sds[j])
-                prior = self._back_transform(mod.prior, endog_sds[j])
-
             posteriors.append(fit)
             priors.append(prior)
 
@@ -732,11 +614,8 @@ class BayesianVAR:
                  ):
 
         first_difference = self.first_difference
-        standardize_data = self.standardize_data
         has_drift = self.has_drift
-        data_means = self.data_means
         num_endog = self.num_endog
-        num_pred_vars = self.num_pred_vars
         ar_order = self.ar_order
         posterior = self.posterior
         fit_with_exog = self.fit_with_exog
@@ -772,34 +651,18 @@ class BayesianVAR:
             for_forecasting=True
         )
 
-        # If the training data was standardized, then we
-        # need to explicitly account for drift as determined
-        # by the original model specification. The
-        # means of the endogenous and predictor variables
-        # are needed for this, particularly if the training
-        # data was standardized and drift is present. Otherwise,
-        # we can use an array of zeros for the endogenous and
-        # predictor variable means.
-        if standardize_data is False:
-            endog_means = np.zeros(num_endog)
-            predictor_means = np.zeros(num_pred_vars)
-        else:
-            if has_drift:
-                endog_means = data_means[:num_endog]
-                predictor_means = data_means[num_endog:]
-            else:
-                endog_means = np.zeros(num_endog)
-                predictor_means = np.zeros(num_pred_vars)
+        if self.standardize_data and self._intercept_index is not None:
+            data = np.delete(data, self._intercept_index, axis=1)
+            data = np.insert(data, 0, 1., axis=1)
 
         y_fcst = var_forecast(
             data=data,
             ar_order=ar_order,
             first_difference=first_difference,
+            has_drift=has_drift,
             posterior=tuple(posterior),
             mean_only=mean_only,
             last_endog=last_endog,
-            endog_means=endog_means,
-            predictor_means=predictor_means,
             seed=fit_seed
         )
 
