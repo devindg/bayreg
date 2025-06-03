@@ -35,7 +35,7 @@ def var_forecast(
         data: np.ndarray,
         ar_order: int,
         first_difference: bool,
-        has_drift: bool,
+        intercept_index: int,
         posterior: tuple,
         mean_only: bool,
         last_endog: np.ndarray,
@@ -47,7 +47,7 @@ def var_forecast(
     horizon = data.shape[0]
     num_coeff = posterior[0].post_coeff_mean.size
 
-    if not has_drift:
+    if intercept_index == -1:
         y_lags = data[:, :num_lag_vars].T
         z = data[:, num_lag_vars:].T
     else:
@@ -75,14 +75,18 @@ def var_forecast(
                 coeffs[i, :] = posterior[i].post_coeff[s, :]
                 error_vars[i] = posterior[i].post_err_var[s, 0]
 
-            if not has_drift:
+            if intercept_index == -1:
                 y_lag_coeffs = coeffs[:, :num_lag_vars]
                 z_coeffs = coeffs[:, num_lag_vars:]
                 drift = np.zeros(num_samp)
-            else:
+            elif intercept_index == 0:
                 y_lag_coeffs = coeffs[:, 1:num_lag_vars + 1]
                 z_coeffs = coeffs[:, 1 + num_lag_vars:]
-                drift = coeffs[:, 0]
+                drift = coeffs[:, intercept_index]
+            else:
+                y_lag_coeffs = coeffs[:, :num_lag_vars]
+                z_coeffs = coeffs[:, 1 + num_lag_vars:]
+                drift = coeffs[:, intercept_index]
 
             for t in prange(horizon):
                 errors = vec_rand_norm(np.zeros_like(error_vars), error_vars ** 0.5)
@@ -111,14 +115,18 @@ def var_forecast(
         for i in prange(num_endog):
             coeffs[i, :] = posterior[i].post_coeff_mean.T
 
-        if not has_drift:
+        if intercept_index == -1:
             y_lag_coeffs = coeffs[:, :num_lag_vars]
             z_coeffs = coeffs[:, num_lag_vars:]
             drift = np.zeros(num_samp)
-        else:
+        elif intercept_index == 0:
             y_lag_coeffs = coeffs[:, 1:num_lag_vars + 1]
             z_coeffs = coeffs[:, 1 + num_lag_vars:]
-            drift = coeffs[:, 0]
+            drift = coeffs[:, intercept_index]
+        else:
+            y_lag_coeffs = coeffs[:, :num_lag_vars]
+            z_coeffs = coeffs[:, 1 + num_lag_vars:]
+            drift = coeffs[:, intercept_index]
 
         for t in prange(horizon):
             if t == 0:
@@ -239,36 +247,36 @@ class BayesianVAR:
         self.num_seasonal_harmonics = num_seasonal_harmonics
         self.standardize_data = None
 
-        """ Standardizing data simultaneously wipes out all constants and 
-        implicitly re-introduces them. For example, if the model being 
+        """ Standardizing data simultaneously wipes out all constants and
+        implicitly re-introduces them. For example, if the model being
         estimated is (error term omitted for exposition)
 
         y_t = a + b * x_t,
 
-        then the standardized model is 
+        then the standardized model is
 
         (y_t - mean(y)) / sd(y) = b * (x_t - mean(x)) / sd(x).
 
-        The intercept 'a' gets wiped out, but the standardized model 
-        implies 
+        The intercept 'a' gets wiped out, but the standardized model
+        implies
 
         y_t = [mean(y) - b * sd(y) / sd(x) * mean(x)] + [b * sd(y) / sd(x)] * x_t
-        iff y_t = A + B * x_t, 
+        iff y_t = A + B * x_t,
 
         where A = [mean(y) - b * sd(y) / sd(x) * mean(x)] and B = [b * sd(y) / sd(x)]
 
-        The standardized model is, therefore, isomorphic up to a constant, implying 
+        The standardized model is, therefore, isomorphic up to a constant, implying
         that
 
         y_t = a + b * x_t (with drift) OR y_t = b * x_t (without drift)
 
         are mathematically equivalent after standardization.
 
-        This means it's important to track if the original (non-standardized) model 
+        This means it's important to track if the original (non-standardized) model
         has drift, especially for forecasting.
 
-        As mentioned above, standardization implicitly introduces an intercept into the 
-        model. Thus, if the model to be estimated has no intercept/drift, standardization 
+        As mentioned above, standardization implicitly introduces an intercept into the
+        model. Thus, if the model to be estimated has no intercept/drift, standardization
         of the data will not include mean-centering of the variables.
         """
 
@@ -380,16 +388,13 @@ class BayesianVAR:
                 else:
                     time_polynomial.append(np.ones((num_rows, 1)))
             if add_trend:
-                if first_difference:
-                    pass
-                else:
-                    (
-                        time_polynomial
-                        .append(
-                            np.arange(num_rows)
-                            .reshape(num_rows, 1) + time_offset
-                        )
+                (
+                    time_polynomial
+                    .append(
+                        np.arange(num_rows)
+                        .reshape(num_rows, 1) + time_offset
                     )
+                )
             if add_seasonal:
                 if periodicity > 1:
                     if num_seasonal_harmonics == 0:
@@ -493,51 +498,51 @@ class BayesianVAR:
             """
             The default covariance prior is a modification of the Zellner-g
             prior. Instead of using a fixed g value to scale
-            the sample covariance matrix, different g values are used 
+            the sample covariance matrix, different g values are used
             for certain features. This is implemented as follows:
 
-            PriorCovariance = G @ V @ G, 
+            PriorCovariance = G @ V @ G,
 
-            where @ is the dot product, V is the sample covariance matrix, 
-            and G = sqrt(diag(g_1, g_2, ..., g_k)), where k is the number of 
-            predictors. By default, g_1 = g_2 = ... = g_k. However, there is 
-            the option of shrinking cross-endogenous predictor variables more 
-            so than own-endogenous predictor variables toward zero. For example, 
+            where @ is the dot product, V is the sample covariance matrix,
+            and G = sqrt(diag(g_1, g_2, ..., g_k)), where k is the number of
+            predictors. By default, g_1 = g_2 = ... = g_k. However, there is
+            the option of shrinking cross-endogenous predictor variables more
+            so than own-endogenous predictor variables toward zero. For example,
             assume the model is
 
             y_1,t = a11 * y_1,t-1 + a12 * y_2,t-1 + b1 * x_t + e_1,t
             y_2,t = a21 * y_1,t-1 + a22 * y_2,t-1 + b2 * x_t + e_2,t
 
-            The cross-endogenous coefficients are a12 and a21; the own-endogenous 
-            coefficients are a11 and a22; and the exogenous coefficients are 
+            The cross-endogenous coefficients are a12 and a21; the own-endogenous
+            coefficients are a11 and a22; and the exogenous coefficients are
             b1 and b2. The sample covariance matrix is
 
-            V = (X.T @ X) ^ (-1), 
+            V = (X.T @ X) ^ (-1),
 
             where X = [vec(y_1,t-1), vec(y,2,t-1), vec(x_t)], t=1,...,T
 
-            The standard Zellner-g prior takes the form g * V. But it may be 
-            desirable to shrink cross-endogenous predictor variables more than 
-            the other predictor variables in an attempt to be more conservative, 
-            especially if there is doubt about the degree of endogeneity (i.e., 
-            the extent of dynamic feedback loops). In other words, it's plausible 
+            The standard Zellner-g prior takes the form g * V. But it may be
+            desirable to shrink cross-endogenous predictor variables more than
+            the other predictor variables in an attempt to be more conservative,
+            especially if there is doubt about the degree of endogeneity (i.e.,
+            the extent of dynamic feedback loops). In other words, it's plausible
             in the given model that y_1 and y_2 are weakly related.
 
-            Taking g as given, and assuming endogeneity is believed to be weak, a 
-            reasonable prior for the covariance might be 
+            Taking g as given, and assuming endogeneity is believed to be weak, a
+            reasonable prior for the covariance might be
 
             PriorCovariance_1 = sqrt(diag(g, g * h, g)) @ V @ sqrt(diag(g, g * h, g))
             PriorCovariance_2 = sqrt(diag(g * h, g, g)) @ V @ sqrt(diag(g * h, g, g))
 
-            where h is some factor that scales g. In the context of weak endogeneity, The 
+            where h is some factor that scales g. In the context of weak endogeneity, The
             0 < h <= 1.
 
-            This prior will more aggressively shrink a12 and a21 closer to 0, assuming 
+            This prior will more aggressively shrink a12 and a21 closer to 0, assuming
             the mean prior is a vector of zeros, than a11, a22, b1, and b2.
 
-            Effectively, this prior casts doubt about the degree of feedback 
-            between the modeled endogenous variables, which will give more weight 
-            to the possibility of a standard AR(p) model with exogenous variables, also 
+            Effectively, this prior casts doubt about the degree of feedback
+            between the modeled endogenous variables, which will give more weight
+            to the possibility of a standard AR(p) model with exogenous variables, also
             known as a dynamic regression model.
 
             """
@@ -558,9 +563,9 @@ class BayesianVAR:
                 mask[num_lag_vars:] = True
                 zell_g_k[~mask] = zellner_g * cross_lag_endog_zellner_g_factor
                 prior_coeff_cov.append(
-                    np.diag(zell_g_k ** 0.5)
-                    @ (1 / zellner_g * pcc)
-                    @ np.diag(zell_g_k ** 0.5)
+                        np.diag(zell_g_k ** 0.5)
+                        @ (1 / zellner_g * pcc)
+                        @ np.diag(zell_g_k ** 0.5)
                 )
                 if cross_lag_endog_zellner_g_factor < 1:
                     pcm = np.asarray(prior_coeff_mean[k])
@@ -651,15 +656,24 @@ class BayesianVAR:
             for_forecasting=True
         )
 
-        if self.standardize_data and self._intercept_index is not None:
-            data = np.delete(data, self._intercept_index, axis=1)
-            data = np.insert(data, 0, 1., axis=1)
+        if self.standardize_data:
+            if self._intercept_index is not None:
+                data = np.delete(data, self._intercept_index, axis=1)
+                data = np.insert(data, 0, 1., axis=1)
+                intercept_index = 0
+            else:
+                intercept_index = -1
+        else:
+            if self._intercept_index is not None:
+                intercept_index = self._intercept_index
+            else:
+                intercept_index = -1
 
         y_fcst = var_forecast(
             data=data,
             ar_order=ar_order,
             first_difference=first_difference,
-            has_drift=has_drift,
+            intercept_index=intercept_index,
             posterior=tuple(posterior),
             mean_only=mean_only,
             last_endog=last_endog,
