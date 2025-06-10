@@ -78,7 +78,7 @@ def default_zellner_g(x: np.ndarray) -> float:
     return max([n, k ** 2])
 
 
-def zellner_precision(
+def zellner_covariance(
         x: np.ndarray,
         zellner_g: float,
         max_mat_cond_index: float
@@ -88,6 +88,12 @@ def zellner_precision(
         ss = StandardScaler()
         x_z = ss.fit_transform(x)
         variable_cols = ~np.all(x_z == 0, axis=0)
+
+        if np.sum(~variable_cols) > 1:
+            raise AssertionError(
+                "The design matrix cannot have more than one constant."
+            )
+
         xtx = (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
         k_z = x_z.shape[1]
         eig_vals = np.linalg.eigvalsh(xtx)
@@ -102,35 +108,36 @@ def zellner_precision(
             avg_trace = np.trace(xtx) / k_z
             w = avg_determ / avg_trace
 
-        Q = np.diag(ss.scale_[variable_cols])
-        xtx = Q @ xtx @ Q
-        prior_coeff_prec = (
+        xtx = x[:, variable_cols].T @ x[:, variable_cols]
+        prior_coeff_cov = mat_inv(
                 1 / zellner_g * (w * xtx + (1 - w) * np.diag(np.diag(xtx)))
         )
 
         # If a constant is present, insert an approximately flat
         # prior for the intercept.
         if np.sum(~variable_cols) == 1:
-            prior_coeff_prec = np.insert(
-                prior_coeff_prec,
+            max_diag = np.max(np.diag(prior_coeff_cov))
+            prior_coeff_cov = np.insert(
+                prior_coeff_cov,
                 ~variable_cols,
                 0,
                 axis=0
             )
-            prior_coeff_prec = np.insert(
-                prior_coeff_prec,
+            prior_coeff_cov = np.insert(
+                prior_coeff_cov,
                 ~variable_cols,
                 0,
                 axis=1
             )
-            prior_coeff_prec[~variable_cols, ~variable_cols] = 1 / 1e6
+            intercept_var = np.min([1e4, max_diag * 1e4])
+            prior_coeff_cov[~variable_cols, ~variable_cols] = intercept_var
 
     else:
-        prior_coeff_prec = (
+        prior_coeff_cov = mat_inv(
                 1 / zellner_g * x.T @ x
         )
 
-    return prior_coeff_prec
+    return prior_coeff_cov
 
 
 class Posterior(NamedTuple):
@@ -214,6 +221,7 @@ class ConjugateBayesianLinearRegression:
         self.predictors_type = type(predictors)
         self.valid_predictors = None
         self.has_intercept = None
+        self.fit_intercept = None
         self.intercept_index = None
         self.response_index = None
         self.response_name = None
@@ -225,9 +233,11 @@ class ConjugateBayesianLinearRegression:
         self.posterior = None
         self.post_pred_dist = None
         self.standardize_data = None
-        self.data_scaler = None
+        self.data_transformer = None
+        self._back_transform_means = None
+        self._back_transform_sds = None
 
-        # Define desired index for intercept when data are standardized
+        # Define new index for intercept if intercept is present
         self._intercept_index = 0
 
         if not isinstance(seed, int):
@@ -382,19 +392,18 @@ class ConjugateBayesianLinearRegression:
         # Get valid design matrix.
         x, valid_cols, intercept_index = valid_design_matrix(x)
 
-        # Warn if no intercept is present
-        if intercept_index is None:
-            warnings.warn(
-                "No intercept was found in the design matrix. Ignore this warning if this is by design "
-                "(e.g., predictors are centered or standardized). Otherwise, add a column of ones to "
-                "the predictors array."
-            )
-
         self.valid_predictors = valid_cols
 
         if intercept_index is not None:
             self.has_intercept = True
             self.intercept_index = intercept_index
+            warnings.warn(
+                "An intercept was detected in the design matrix. Note that any prior "
+                "given to the intercept will be ignored because the data are either "
+                "standardized or centered (which eliminates the intercept) for estimation. "
+                "Effectively, the intercept is treated with a vague Normal prior and "
+                "derived after the model is fitted."
+            )
         else:
             self.has_intercept = False
             self.intercept_index = None
@@ -418,7 +427,8 @@ class ConjugateBayesianLinearRegression:
 
     def prepare_data(
             self,
-            standardize_data: bool
+            standardize_data: bool,
+            fit_intercept: bool
     ):
         y = self._process_response(response=self.response)
         x = self._process_predictors(predictors=self.predictors)
@@ -427,27 +437,228 @@ class ConjugateBayesianLinearRegression:
         self.response = y
         self.predictors = x
 
-        if standardize_data:
-            if self.has_intercept:
-                ss = StandardScaler()
-                x = np.delete(x, self.intercept_index, axis=1)
-                # Reconfigure position of intercept to comply with defined
-                # index _intercept_index, which is used under standardization
-                self.predictors = np.insert(x, self._intercept_index, 1., axis=1)
-            else:
-                ss = StandardScaler(with_mean=False)
+        if self.has_intercept:
+            x = np.delete(x, self.intercept_index, axis=1)
 
-            data = np.c_[y, x]
-            data = ss.fit_transform(data)
-            self.data_scaler = ss
-            y, x = data[:, 0:1], data[:, 1:]
+        if fit_intercept:
+            self.predictors = np.insert(x, self._intercept_index, 1., axis=1)
+
+        if standardize_data:
+            if fit_intercept:
+                ss = StandardScaler(
+                    with_mean=True,
+                    with_std=True
+                )
+            else:
+                ss = StandardScaler(
+                    with_mean=False,
+                    with_std=True
+                )
+        else:
+            if fit_intercept:
+                ss = StandardScaler(
+                    with_mean=True,
+                    with_std=False
+                )
+            else:
+                ss = StandardScaler(
+                    with_mean=False,
+                    with_std=False
+                )
+
+        data = np.c_[y, x]
+        data = ss.fit_transform(data)
+        self.data_transformer = ss
+        y, x = data[:, 0:1], data[:, 1:]
+
+        # Capture means and standard deviations for back-transoformations
+        self._back_transform_params()
 
         return y, x
+
+    def _back_transform_params(self):
+        data_transformer = self.data_transformer
+        with_mean = data_transformer.with_mean
+        with_sd = data_transformer.with_std
+        scales = data_transformer.scale_
+        means = data_transformer.mean_
+
+        if with_mean and with_sd:
+            m_y, m_x = means[0], means[1:]
+            sd_y, sd_x = scales[0], scales[1:]
+        elif not with_mean and with_sd:
+            m_y, m_x = 0., np.zeros_like(scales[1:])
+            sd_y, sd_x = scales[0], scales[1:]
+        elif with_mean and not with_sd:
+            m_y, m_x = means[0], means[1:]
+            sd_y, sd_x = 1., np.ones_like(means[1:])
+        else:
+            m_y, m_x = 0., np.zeros(self.num_predictors)
+            sd_y, sd_x = 1., np.ones(self.num_predictors)
+
+        self._back_transform_means = np.concatenate(([m_y], m_x))
+        self._back_transform_sds = np.concatenate(([sd_y], sd_x))
+
+        return self
+
+    def _reconfig_prior_coeff_mean(
+            self,
+            prior_coeff_mean: np.ndarray
+    ):
+        pcm = prior_coeff_mean.copy()
+
+        if self.has_intercept:
+            # Standardizing or centering reparameterizes the intercept.
+            # Effectively, the implied intercept turns into a
+            # parameter with a vague prior. This will be enforced
+            # with a zero-mean and high variance.
+
+            # Delete row associated with intercept index
+            pcm = np.delete(pcm, self.intercept_index, axis=0)
+
+        if self.fit_intercept:
+            pcm = np.insert(pcm, self._intercept_index, 0, axis=0)
+            self.prior = self.prior._replace(prior_coeff_mean=pcm)
+
+            # Now delete the intercept prior for estimation
+            pcm = np.delete(
+                pcm,
+                self._intercept_index,
+                axis=0
+            )
+
+        if self.standardize_data:
+            data_scales = self.data_transformer.scale_
+            sd_y, sd_x = data_scales[0], data_scales[1:]
+            W = np.diag(sd_x)
+            pcm = W @ pcm / sd_y
+
+        return pcm
+
+    def _reconfig_prior_coeff_cov(
+            self,
+            prior_coeff_cov,
+            is_custom
+    ):
+        pcc = prior_coeff_cov.copy()
+
+        if self.has_intercept:
+            # Standardizing or centering reparameterizes the intercept.
+            # Effectively, the implied intercept turns into a
+            # parameter with a vague prior. This will be enforced
+            # with a zero-mean and high variance.
+
+            if is_custom:
+                # Delete row and column associated with intercept index
+                pcc = np.delete(pcc, self.intercept_index, axis=0)
+                pcc = np.delete(pcc, self.intercept_index, axis=1)
+
+        if self.fit_intercept:
+            pcc = np.insert(pcc, self._intercept_index, 0, axis=0)
+            pcc = np.insert(pcc, self._intercept_index, 0, axis=1)
+
+            # Define prior variance for intercept
+            var_y = np.var(self.response)
+            max_pcc_diag = np.max(np.diag(pcc))
+            if var_y < max_pcc_diag:
+                intercept_var = max_pcc_diag * 1e4
+            else:
+                intercept_var = np.min([var_y, max_pcc_diag * 1e4])
+
+            pcc[self._intercept_index, self._intercept_index] = intercept_var
+            self.prior = self.prior._replace(prior_coeff_cov=pcc)
+
+            # Now delete the intercept prior for estimation
+            mask = [
+                True for i in range(self.num_coeff)
+                if i != self._intercept_index
+            ]
+            pcc = pcc[np.ix_(mask, mask)]
+
+        if self.standardize_data and is_custom:
+            data_scales = self.data_transformer.scale_
+            sd_y, sd_x = data_scales[0], data_scales[1:]
+            W = np.diag(sd_x)
+            pcc = (W @ pcc @ W) / sd_y ** 2
+
+        pcp = mat_inv(pcc)
+
+        return pcc, pcp
+
+    def _reconfig_prior_err_var_scale(
+            self,
+            prior_err_var_scale
+    ):
+        if self.standardize_data:
+            sd_y = self.data_transformer.scale_[0]
+
+            return prior_err_var_scale / sd_y ** 2
+        else:
+            return prior_err_var_scale
+
+    def _back_transform_posterior(
+            self,
+            predictors,
+            post_coeff_mean,
+            post_coeff_cov,
+            post_coeff,
+            post_err_var_shape,
+            post_err_var_scale,
+            post_err_var,
+            ninvg_post_coeff_cov
+    ):
+        x = self.predictors
+
+        if self.standardize_data:
+            scales = self._back_transform_sds
+            sd_y, sd_x = scales[0], scales[1:]
+            W = np.diag(1 / sd_x)
+            post_coeff_mean = (W @ post_coeff_mean) * sd_y
+            post_coeff_cov = (W @ post_coeff_cov @ W) * sd_y ** 2
+            post_coeff = (post_coeff @ W) * sd_y
+            post_err_var_scale = post_err_var_scale * sd_y ** 2
+            post_err_var = post_err_var * sd_y ** 2
+            ninvg_post_coeff_cov = (W @ ninvg_post_coeff_cov @ W) * sd_y ** 2
+
+        if self.fit_intercept:
+            means = self._back_transform_means
+            m_y, m_x = means[0], means[1:]
+            post_intercept_mean = (
+                np.atleast_2d(
+                    m_y - post_coeff_mean.flatten() @ m_x
+                )
+            )
+            post_coeff_mean = np.insert(
+                post_coeff_mean,
+                self._intercept_index,
+                post_intercept_mean,
+                axis=0
+            )
+            post_intercept = m_y - post_coeff @ m_x
+            post_coeff = np.insert(
+                post_coeff,
+                self._intercept_index,
+                post_intercept,
+                axis=1
+            )
+            prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
+            ninvg_post_coeff_cov = mat_inv(x.T @ x + prior_coeff_prec)
+            post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
+
+        return (
+            post_coeff_mean,
+            post_coeff_cov,
+            post_coeff,
+            post_err_var_scale,
+            post_err_var,
+            ninvg_post_coeff_cov
+        )
 
     def fit(
             self,
             num_post_samp: int = 1000,
             standardize_data: bool = True,
+            fit_intercept: bool = True,
             prior_coeff_mean: Union[list, tuple, np.ndarray] = None,
             prior_coeff_cov: Union[list, tuple, np.ndarray] = None,
             prior_err_var_shape: Union[int, float] = None,
@@ -456,9 +667,9 @@ class ConjugateBayesianLinearRegression:
             max_mat_cond_index: Union[int, float] = 30.,
     ) -> Posterior:
         """
-
         :param num_post_samp:
         :param standardize_data:
+        :param fit_intercept:
         :param prior_coeff_mean:
         :param prior_coeff_cov:
         :param prior_err_var_shape:
@@ -469,7 +680,11 @@ class ConjugateBayesianLinearRegression:
         """
 
         self.standardize_data = standardize_data
-        y, x = self.prepare_data(standardize_data=standardize_data)
+        self.fit_intercept = fit_intercept
+        y, x = self.prepare_data(
+            standardize_data=standardize_data,
+            fit_intercept=fit_intercept
+        )
         n, k = self.num_obs, self.num_coeff
 
         # Get SVD of design matrix
@@ -543,9 +758,9 @@ class ConjugateBayesianLinearRegression:
             prior_coeff_mean = np.zeros((self.num_coeff, 1))
 
         # Check prior covariance matrix for regression coefficients
-        cov_provided = False
         if prior_coeff_cov is not None:
-            cov_provided = True
+            is_custom_cov = True
+
             if not isinstance(prior_coeff_cov, (list, tuple, np.ndarray)):
                 raise TypeError(
                     "prior_coeff_cov must be a list, tuple, or NumPy array."
@@ -578,6 +793,7 @@ class ConjugateBayesianLinearRegression:
 
             prior_coeff_prec = mat_inv(prior_coeff_cov)
         else:
+            is_custom_cov = False
             """
             If predictors are specified without a precision prior, Zellner's g-prior will
             be enforced. Specifically, 1 / g * (w * dot(X.T, X) + (1 - w) * diag(dot(X.T, X))),
@@ -607,12 +823,12 @@ class ConjugateBayesianLinearRegression:
             # in which case, more weight will be given to a diagonal precision
             # matrix.
 
-            prior_coeff_prec = zellner_precision(
+            prior_coeff_cov = zellner_covariance(
                 x=x,
                 zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index
             )
-            prior_coeff_cov = mat_inv(prior_coeff_prec)
+            prior_coeff_prec = mat_inv(prior_coeff_cov)
 
         self.prior = Prior(
             prior_coeff_mean=prior_coeff_mean,
@@ -622,57 +838,18 @@ class ConjugateBayesianLinearRegression:
             zellner_g=zellner_g,
         )
 
-        # Scale priors if standardization is specified
-        if standardize_data:
-            scales = self.data_scaler.scale_
-            sd_y, sd_x = scales[0], scales[1:]
-            W = np.diag(sd_x)
-            prior_err_var_scale = prior_err_var_scale / sd_y ** 2
-
-            if self.has_intercept:
-                # Standardizing reparameterizes the intercept.
-                # Effectively, the implied intercept turns into a
-                # parameter with a vague prior. This will be enforced
-                # with a zero-mean and high variance.
-
-                # Reconfigure the prior by moving the intercept prior to the beginning
-                pcm = np.delete(prior_coeff_mean, self.intercept_index, axis=0)
-                pcm = np.insert(pcm, self._intercept_index, 0, axis=0)
-                self.prior = self.prior._replace(prior_coeff_mean=pcm)
-
-                # Now delete the intercept prior for estimation
-                prior_coeff_mean = np.delete(
-                    pcm,
-                    self._intercept_index,
-                    axis=0
-                )
-
-                if cov_provided:
-                    # Reconfigure the prior by moving the intercept prior to the beginning
-                    pcc = np.delete(prior_coeff_cov, self.intercept_index, axis=0)
-                    pcc = np.delete(pcc, self.intercept_index, axis=1)
-                    pcc = np.insert(pcc, self._intercept_index, 0, axis=0)
-                    pcc = np.insert(pcc, self._intercept_index, 0, axis=1)
-                    pcc[self._intercept_index, self._intercept_index] = 1e6
-                    self.prior = self.prior._replace(prior_coeff_cov=pcc)
-
-                    # Now delete the intercept prior for estimation
-                    mask = [
-                        True for i in range(self.num_coeff)
-                        if i != self._intercept_index
-                    ]
-                    prior_coeff_cov = pcc[np.ix_(mask, mask)]
-                else:
-                    pcc = np.zeros((self.num_coeff, self.num_coeff))
-                    pcc[self._intercept_index, self._intercept_index] = 1e6
-                    pcc[1:, 1:] = prior_coeff_cov
-                    self.prior = self.prior._replace(prior_coeff_cov=pcc)
-
-            prior_coeff_mean = W @ prior_coeff_mean / sd_y
-
-            if cov_provided:
-                prior_coeff_cov = W @ prior_coeff_cov @ W / sd_y ** 2
-                prior_coeff_prec = mat_inv(prior_coeff_cov)
+        # Reconfigure certain priors depending on data standardization and intercept
+        # treatment.
+        prior_coeff_mean = self._reconfig_prior_coeff_mean(
+            prior_coeff_mean=prior_coeff_mean
+        )
+        prior_coeff_cov, prior_coeff_prec = self._reconfig_prior_coeff_cov(
+            prior_coeff_cov=prior_coeff_cov,
+            is_custom=is_custom_cov
+        )
+        prior_err_var_scale = self._reconfig_prior_err_var_scale(
+            prior_err_var_scale=prior_err_var_scale
+        )
 
         # Posterior values for coefficient mean, coefficient covariance matrix,
         # error variance shape, and error variance scale.
@@ -738,42 +915,24 @@ class ConjugateBayesianLinearRegression:
         post_coeff_cov = Vt.T @ post_coeff_cov @ Vt
         post_coeff = post_coeff @ Vt
 
-        if standardize_data:
-            scales = self.data_scaler.scale_
-            means = self.data_scaler.mean_
-            m_y, m_x = means[0], means[1:]
-            sd_y, sd_x = scales[0], scales[1:]
-            W = np.diag(1 / sd_x)
-            post_coeff_mean = sd_y * (W @ post_coeff_mean)
-            post_coeff_cov = sd_y ** 2 * (W @ post_coeff_cov @ W)
-            post_coeff = sd_y * (post_coeff @ W)
-            post_err_var_scale = sd_y ** 2 * post_err_var_scale
-            post_err_var = sd_y ** 2 * post_err_var
-            ninvg_post_coeff_cov = sd_y ** 2 * (W @ ninvg_post_coeff_cov @ W)
-
-            if self.has_intercept:
-                x = self.predictors
-                post_intercept_mean = (
-                    np.atleast_2d(
-                        m_y - post_coeff_mean.flatten() @ m_x
-                    )
-                )
-                post_coeff_mean = np.insert(
-                    post_coeff_mean,
-                    self._intercept_index,
-                    post_intercept_mean,
-                    axis=0
-                )
-                post_intercept = m_y - post_coeff @ m_x
-                post_coeff = np.insert(
-                    post_coeff,
-                    self._intercept_index,
-                    post_intercept,
-                    axis=1
-                )
-                prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
-                ninvg_post_coeff_cov = mat_inv(x.T @ x + prior_coeff_prec)
-                post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
+        # Back-transform posterior if applicable
+        (
+            post_coeff_mean,
+            post_coeff_cov,
+            post_coeff,
+            post_err_var_scale,
+            post_err_var,
+            ninvg_post_coeff_cov
+         ) = self._back_transform_posterior(
+            predictors=x,
+            post_coeff_mean=post_coeff_mean,
+            post_coeff_cov=post_coeff_cov,
+            post_coeff=post_coeff,
+            post_err_var_shape=post_err_var_shape,
+            post_err_var_scale=post_err_var_scale,
+            post_err_var=post_err_var,
+            ninvg_post_coeff_cov=ninvg_post_coeff_cov
+        )
 
         self.posterior = Posterior(
             num_post_samp=num_post_samp,
@@ -835,9 +994,11 @@ class ConjugateBayesianLinearRegression:
                     )
                 x = x[:, self.valid_predictors]
 
-        if self.standardize_data and self.has_intercept:
+        if self.has_intercept:
             x = np.delete(x, self.intercept_index, axis=1)
-            x = np.insert(x, self._intercept_index, 1., axis=1)
+
+            if self.fit_intercept:
+                x = np.insert(x, self._intercept_index, 1., axis=1)
 
         self._posterior_exists_check()
         n = predictors.shape[0]
@@ -899,6 +1060,7 @@ class ConjugateBayesianLinearRegression:
         post_err_var = posterior.post_err_var
         post_err_var_shape = posterior.post_err_var_shape
         post_err_var_scale = posterior.post_err_var_scale
+
         if post_err_var_shape > 1:
             post_err_var_mean = post_err_var_scale / (post_err_var_shape - 1)
         else:

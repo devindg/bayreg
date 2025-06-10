@@ -5,7 +5,7 @@ from .linear_regression import ConjugateBayesianLinearRegression as CBLR
 from .linear_regression import (
     valid_design_matrix,
     default_zellner_g,
-    zellner_precision
+    zellner_covariance
 )
 from ..bayreg.linear_algebra.array_operations import mat_inv
 from numba import njit, vectorize, float64, prange
@@ -549,12 +549,11 @@ class BayesianVAR:
             if zellner_g is None:
                 zellner_g = default_zellner_g(x=pred_vars)
 
-            pcp = zellner_precision(
+            pcc = zellner_covariance(
                 x=pred_vars,
                 zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index
             )
-            pcc = mat_inv(pcp)
             prior_coeff_cov = []
             for k in range(num_endog):
                 zell_g_k = np.ones(num_pred_vars) * zellner_g
