@@ -444,27 +444,15 @@ class ConjugateBayesianLinearRegression:
             self.predictors = np.insert(x, self._intercept_index, 1., axis=1)
 
         if standardize_data:
-            if fit_intercept:
-                ss = StandardScaler(
-                    with_mean=True,
-                    with_std=True
-                )
-            else:
-                ss = StandardScaler(
-                    with_mean=False,
-                    with_std=True
-                )
+            ss = StandardScaler(
+                with_mean=True,
+                with_std=True
+            )
         else:
-            if fit_intercept:
-                ss = StandardScaler(
-                    with_mean=True,
-                    with_std=False
-                )
-            else:
-                ss = StandardScaler(
-                    with_mean=False,
-                    with_std=False
-                )
+            ss = StandardScaler(
+                with_mean=True,
+                with_std=False
+            )
 
         data = np.c_[y, x]
         data = ss.fit_transform(data)
@@ -478,28 +466,20 @@ class ConjugateBayesianLinearRegression:
 
     def _back_transform_params(self):
         data_transformer = self.data_transformer
-        with_mean = data_transformer.with_mean
         with_sd = data_transformer.with_std
         scales = data_transformer.scale_
         means = data_transformer.mean_
+        m_y, m_x = means[0], means[1:]
 
-        if with_mean and with_sd:
-            m_y, m_x = means[0], means[1:]
+        if with_sd:
             sd_y, sd_x = scales[0], scales[1:]
-        elif not with_mean and with_sd:
-            m_y, m_x = 0., np.zeros_like(scales[1:])
-            sd_y, sd_x = scales[0], scales[1:]
-        elif with_mean and not with_sd:
-            m_y, m_x = means[0], means[1:]
-            sd_y, sd_x = 1., np.ones_like(means[1:])
         else:
-            m_y, m_x = 0., np.zeros(self.num_predictors)
-            sd_y, sd_x = 1., np.ones(self.num_predictors)
+            sd_y, sd_x = 1., np.ones_like(means[1:])
 
         self._back_transform_means = np.concatenate(([m_y], m_x))
         self._back_transform_sds = np.concatenate(([sd_y], sd_x))
 
-        return self
+        return
 
     def _reconfig_prior_coeff_mean(
             self,
@@ -569,11 +549,8 @@ class ConjugateBayesianLinearRegression:
             self.prior = self.prior._replace(prior_coeff_cov=pcc)
 
             # Now delete the intercept prior for estimation
-            mask = [
-                True for i in range(self.num_coeff)
-                if i != self._intercept_index
-            ]
-            pcc = pcc[np.ix_(mask, mask)]
+            pcc = np.delete(pcc, self._intercept_index, axis=0)
+            pcc = np.delete(pcc, self._intercept_index, axis=1)
 
         if self.standardize_data and is_custom:
             data_scales = self.data_transformer.scale_
@@ -598,7 +575,6 @@ class ConjugateBayesianLinearRegression:
 
     def _back_transform_posterior(
             self,
-            predictors,
             post_coeff_mean,
             post_coeff_cov,
             post_coeff,
@@ -791,7 +767,6 @@ class ConjugateBayesianLinearRegression:
                 if not is_symmetric(prior_coeff_cov):
                     raise ValueError("prior_coeff_cov must be a symmetric matrix.")
 
-            prior_coeff_prec = mat_inv(prior_coeff_cov)
         else:
             is_custom_cov = False
             """
@@ -828,7 +803,6 @@ class ConjugateBayesianLinearRegression:
                 zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index
             )
-            prior_coeff_prec = mat_inv(prior_coeff_cov)
 
         self.prior = Prior(
             prior_coeff_mean=prior_coeff_mean,
@@ -924,7 +898,6 @@ class ConjugateBayesianLinearRegression:
             post_err_var,
             ninvg_post_coeff_cov
          ) = self._back_transform_posterior(
-            predictors=x,
             post_coeff_mean=post_coeff_mean,
             post_coeff_cov=post_coeff_cov,
             post_coeff=post_coeff,

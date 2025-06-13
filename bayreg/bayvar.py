@@ -7,9 +7,10 @@ from .linear_regression import (
     default_zellner_g,
     zellner_covariance
 )
-from ..bayreg.linear_algebra.array_operations import mat_inv
 from numba import njit, vectorize, float64, prange
 from numpy.random import normal
+from .transformations.data_utils import fourier_matrix, shift_array
+from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
 
@@ -30,12 +31,13 @@ def cumulative_sum(arr):
     return cuml_sum
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def var_forecast(
-        data: np.ndarray,
+        endog_lag: np.ndarray,
+        exog: np.ndarray,
         ar_order: int,
         first_difference: bool,
-        intercept_index: int,
+        with_drift: bool,
         posterior: tuple,
         mean_only: bool,
         last_endog: np.ndarray,
@@ -43,30 +45,34 @@ def var_forecast(
 ):
     np.random.seed(seed)
     num_endog = len(posterior)
-    num_lag_vars = num_endog * ar_order
-    horizon = data.shape[0]
+    horizon = endog_lag.shape[0]
     num_coeff = posterior[0].post_coeff_mean.size
+    num_endog_lag = endog_lag.shape[1]
+    endog_lag = endog_lag.T
+    exog = exog.T
 
-    if intercept_index == -1:
-        y_lags = data[:, :num_lag_vars].T
-        z = data[:, num_lag_vars:].T
-    else:
-        y_lags = data[:, 1:num_lag_vars + 1].T
-        z = data[:, 1 + num_lag_vars:].T
+    # Initialize as if mean_only=True. This will get overwritten if not.
+    num_samp = 1
+    errors = np.zeros((num_endog, horizon))
+    coeffs = np.empty(
+        shape=(num_endog, num_coeff),
+        dtype=np.float64
+    )
+    for i in prange(num_endog):
+        coeffs[i, :] = posterior[i].post_coeff_mean.T
+
 
     if not mean_only:
         num_samp = posterior[0].post_err_var.size
-        y_fcst = np.full(
-            shape=(num_samp, num_endog, horizon),
-            dtype=np.float64,
-            fill_value=np.nan
-        )
 
-        for s in prange(num_samp):
-            coeffs = np.empty(
-                shape=(num_endog, num_coeff),
-                dtype=np.float64
-            )
+    y_fcst = np.full(
+        shape=(num_samp, num_endog, horizon),
+        dtype=np.float64,
+        fill_value=np.nan
+    )
+
+    for s in prange(num_samp):
+        if not mean_only:
             error_vars = np.empty(
                 shape=(num_endog,),
                 dtype=np.float64
@@ -75,70 +81,41 @@ def var_forecast(
                 coeffs[i, :] = posterior[i].post_coeff[s, :]
                 error_vars[i] = posterior[i].post_err_var[s, 0]
 
-            if intercept_index == -1:
-                y_lag_coeffs = coeffs[:, :num_lag_vars]
-                z_coeffs = coeffs[:, num_lag_vars:]
-                drift = np.zeros(num_samp)
-            elif intercept_index == 0:
-                y_lag_coeffs = coeffs[:, 1:num_lag_vars + 1]
-                z_coeffs = coeffs[:, 1 + num_lag_vars:]
-                drift = coeffs[:, intercept_index]
-            else:
-                y_lag_coeffs = coeffs[:, :num_lag_vars]
-                z_coeffs = coeffs[:, 1 + num_lag_vars:]
-                drift = coeffs[:, intercept_index]
-
+            errors = np.empty(
+                shape=(num_endog, horizon),
+                dtype=np.float64
+            )
             for t in prange(horizon):
-                errors = vec_rand_norm(np.zeros_like(error_vars), error_vars ** 0.5)
-                if t == 0:
-                    pass
-                else:
-                    ys = np.concatenate((y_fcst[s, :, t - 1], y_lags[:, t - 1]))
-                    if 0 < t < ar_order:
-                        y_lags[:num_endog * t, t] = ys[:num_endog * t]
-                    else:
-                        y_lags[:num_endog * ar_order, t] = ys[:num_endog * ar_order]
+                errors[:, t] = vec_rand_norm(
+                    np.zeros(num_endog),
+                    error_vars ** 0.5
+                )
 
-                y_fcst[s, :, t] = drift + y_lag_coeffs @ y_lags[:, t] + z_coeffs @ z[:, t] + errors
-
-    else:
-        num_samp = 1
-        y_fcst = np.full(
-            shape=(num_samp, num_endog, horizon),
-            dtype=np.float64,
-            fill_value=np.nan
-        )
-        coeffs = np.empty(
-            shape=(num_endog, num_coeff),
-            dtype=np.float64
-        )
-        for i in prange(num_endog):
-            coeffs[i, :] = posterior[i].post_coeff_mean.T
-
-        if intercept_index == -1:
-            y_lag_coeffs = coeffs[:, :num_lag_vars]
-            z_coeffs = coeffs[:, num_lag_vars:]
-            drift = np.zeros(num_samp)
-        elif intercept_index == 0:
-            y_lag_coeffs = coeffs[:, 1:num_lag_vars + 1]
-            z_coeffs = coeffs[:, 1 + num_lag_vars:]
-            drift = coeffs[:, intercept_index]
+        if not with_drift:
+            drift = np.zeros(num_endog)
+            endog_lag_coeffs = coeffs[:, :num_endog_lag]
+            exog_coeffs = coeffs[:, num_endog_lag:]
         else:
-            y_lag_coeffs = coeffs[:, :num_lag_vars]
-            z_coeffs = coeffs[:, 1 + num_lag_vars:]
-            drift = coeffs[:, intercept_index]
+            drift = coeffs[:, 0]
+            endog_lag_coeffs = coeffs[:, 1:num_endog_lag + 1]
+            exog_coeffs = coeffs[:, 1 + num_endog_lag:]
 
         for t in prange(horizon):
             if t == 0:
                 pass
             else:
-                ys = np.concatenate((y_fcst[0, :, t - 1], y_lags[:, t - 1]))
+                ys = np.concatenate((y_fcst[s, :, t - 1], endog_lag[:, t - 1]))
                 if 0 < t < ar_order:
-                    y_lags[:num_endog * t, t] = ys[:num_endog * t]
+                    endog_lag[:num_endog * t, t] = ys[:num_endog * t]
                 else:
-                    y_lags[:num_endog * ar_order, t] = ys[:num_endog * ar_order]
+                    endog_lag[:num_endog * ar_order, t] = ys[:num_endog * ar_order]
 
-            y_fcst[0, :, t] = drift + y_lag_coeffs @ y_lags[:, t] + z_coeffs @ z[:, t]
+            y_fcst[s, :, t] = (
+                    drift
+                    + endog_lag_coeffs @ endog_lag[:, t]
+                    + exog_coeffs @ exog[:, t]
+                    + errors[:, t]
+            )
 
     if first_difference:
         for s in prange(num_samp):
@@ -146,85 +123,6 @@ def var_forecast(
                 y_fcst[s, i] = last_endog[i] + cumulative_sum(y_fcst[s, i])
 
     return y_fcst
-
-
-def shift_array(a, shift, fill_value=np.nan):
-    a_shift = np.empty_like(a)
-    if shift > 0:
-        a_shift[:shift] = fill_value
-        a_shift[shift:] = a[:-shift]
-    elif shift < 0:
-        a_shift[shift:] = fill_value
-        a_shift[:shift] = a[-shift:]
-    else:
-        a_shift[:] = a
-
-    return a_shift
-
-
-def fourier_matrix(
-        time_index,
-        periodicity,
-        num_harmonics
-):
-    """
-    Creates a Fourier representation of a periodic/oscillating function of time.
-    An ordered integer array of values capturing time is mapped to a
-    matrix, where in general row R is a Fourier series represenation of some
-    unknown function f(t) evaluated at t=R. The matrix returned is F. It takes
-    the following form:
-
-    t=1: [cos(2 * pi * n * 1 / p), sin(2 * pi * n * 1 / p)], n = 1, 2, ..., N
-    t=2: [cos(2 * pi * n * 2 / p), sin(2 * pi * n * 2 / p)], n = 1, 2, ..., N
-    t=3: [cos(2 * pi * n * 3 / p), sin(2 * pi * n * 3 / p)], n = 1, 2, ..., N
-    .
-    .
-    .
-    t=T: [cos(2 * pi * n * T / p), sin(2 * pi * 1 * T / p)], n = 1, 2, ..., N
-
-    Each row in F is of length 2N. Assuming a cycle of length P, row
-    R is the same as row (P+1)R.
-
-    The matrix F is intended to be augmented to a design matrix for regression,
-    where the outcome variable is measured over time.
-
-
-    Parameters
-    ----------
-    time_index : array
-        Sequence of ordered integers representing the evolution of time.
-        For example, t = [0,1,2,3,4,5, ..., T], where T is the terminal period.
-
-    periodicity: float
-        The amount of time it takes for a period/cycle to end. For example,
-        if the frequency of data is monthly, then a period completes in 12
-        months. If data is daily, then there could conceivably be two period
-        lengths, one for every week (a period of length 7) and one for every
-        year (a period of length 365.25). Must be positive.
-
-    num_harmonics : integer
-        The number of cosine-sine pairs to approximate oscillations in the
-        variable t.
-
-
-    Returns
-    -------
-    A T x 2N matrix of cosine-sine pairs that take the form
-
-        cos(2 * pi * n * t / p), sin(2 * pi * n * t / p),
-        t = 1, 2, ..., T
-        n = 1, 2, ..., N
-
-    """
-
-    # Create cosine and sine input scalar factors, 2 * pi * n / (p / s), n=1,...,N
-    c = 2 * np.pi * np.arange(1, num_harmonics + 1) / periodicity
-    # Create cosine and sine input values, 2 * pi * n / (p / s) * t, t=1,...,T and n=1,...,N
-    x = c * time_index[:, np.newaxis]
-    # Pass X to cos() and sin() functions to create Fourier series
-    fft_mat = np.c_[np.cos(x), np.sin(x)]
-
-    return fft_mat
 
 
 class BayesianVAR:
@@ -290,7 +188,6 @@ class BayesianVAR:
 
         # Initialize other class attributes
         self.num_endog = None
-        self.num_pred_vars = None
         self.orig_num_obs = None
         self.num_obs = None
         self.train_data_prepared = False
@@ -301,7 +198,6 @@ class BayesianVAR:
         self.fit_with_exog = None
         self.zellner_g = None
         self.cross_endog_zellner_g = None
-        self._intercept_index = None
 
     def prepare_data(
             self,
@@ -312,7 +208,6 @@ class BayesianVAR:
 
         ar_order = self.ar_order
         first_difference = self.first_difference
-        add_intercept = self.add_intercept
         add_trend = self.add_trend
         add_seasonal = self.add_seasonal
         periodicity = self.seasonal_periodicity
@@ -347,6 +242,8 @@ class BayesianVAR:
                         "of observations."
                     )
 
+        num_lag_vars = ar_order * num_endog
+
         if not for_forecasting:
             time_offset = 0
         else:
@@ -370,7 +267,6 @@ class BayesianVAR:
 
             y_lags = np.concatenate(y_lags, axis=1)
         else:
-            num_lag_vars = int(num_endog * ar_order)
             y_lags = np.full(
                 shape=(num_rows, num_lag_vars),
                 dtype=np.float64,
@@ -380,21 +276,17 @@ class BayesianVAR:
                 w = p * num_endog
                 y_lags[p, w:] = last_data[0, :num_lag_vars - w]
 
-        if add_intercept or add_trend or add_seasonal:
+        if add_trend or add_seasonal:
             time_polynomial = []
-            if add_intercept:
-                if first_difference:
-                    pass
-                else:
-                    time_polynomial.append(np.ones((num_rows, 1)))
             if add_trend:
-                (
-                    time_polynomial
-                    .append(
-                        np.arange(num_rows)
-                        .reshape(num_rows, 1) + time_offset
+                if not first_difference:
+                    (
+                        time_polynomial
+                        .append(
+                            np.arange(num_rows)
+                            .reshape(num_rows, 1) + time_offset
+                        )
                     )
-                )
             if add_seasonal:
                 if periodicity > 1:
                     if num_seasonal_harmonics == 0:
@@ -439,16 +331,22 @@ class BayesianVAR:
             if for_forecasting:
                 data = np.concatenate((last_data, data), axis=0)
             data = np.diff(data, n=1, axis=0)
+            data = data[:, ~np.all(data == 0, axis=0)]
 
         if not for_forecasting:
             data = data[~np.any(np.isnan(data), axis=1)]
             self.num_obs = data.shape[0]
-            self.num_pred_vars = data.shape[1] - num_endog
             self.train_data_prepared = True
-        else:
-            data = data[:, num_endog:]
 
-        return data
+        if not for_forecasting:
+            endog = data[:, :num_endog]
+        else:
+            endog = None
+
+        endog_lag = data[:, num_endog:num_endog + num_lag_vars]
+        exog = data[:, num_endog + num_lag_vars:]
+
+        return endog, endog_lag, exog
 
     def fit(self,
             endog: np.ndarray,
@@ -478,7 +376,7 @@ class BayesianVAR:
         self.fit_seed = seed
         self.cross_endog_zellner_g = cross_lag_endog_zellner_g_factor
 
-        data = self.prepare_data(
+        endog, endog_lag, exog = self.prepare_data(
             endog=endog,
             exog=exog,
             for_forecasting=False
@@ -486,10 +384,9 @@ class BayesianVAR:
 
         ar_order = self.ar_order
         num_endog = self.num_endog
-        num_pred_vars = self.num_pred_vars
-        endog_vars = data[:, :num_endog]
-        pred_vars = data[:, num_endog:]
         num_lag_vars = ar_order * num_endog
+        x = np.c_[endog_lag, exog]
+        num_pred_vars = x.shape[1]
 
         if prior_coeff_mean is None:
             prior_coeff_mean = [np.zeros(num_pred_vars)] * num_endog
@@ -547,15 +444,19 @@ class BayesianVAR:
 
             """
             if zellner_g is None:
-                zellner_g = default_zellner_g(x=pred_vars)
+                zellner_g = default_zellner_g(x=x)
 
             pcc = zellner_covariance(
-                x=pred_vars,
+                x=StandardScaler(with_std=False).fit_transform(x),
                 zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index
             )
             prior_coeff_cov = []
             for k in range(num_endog):
+                if standardize_data:
+                    var_y = np.var(endog[:, k])
+                else:
+                    var_y = 1.
                 zell_g_k = np.ones(num_pred_vars) * zellner_g
                 mask = np.array([False] * num_pred_vars)
                 mask[:num_lag_vars][k::num_endog] = True
@@ -564,7 +465,7 @@ class BayesianVAR:
                 prior_coeff_cov.append(
                         np.diag(zell_g_k ** 0.5)
                         @ (1 / zellner_g * pcc)
-                        @ np.diag(zell_g_k ** 0.5)
+                        @ np.diag(zell_g_k ** 0.5) * var_y
                 )
                 if cross_lag_endog_zellner_g_factor < 1:
                     pcm = np.asarray(prior_coeff_mean[k])
@@ -572,7 +473,7 @@ class BayesianVAR:
                     prior_coeff_mean[k] = pcm.tolist()
         else:
             if zellner_g is None:
-                zellner_g = default_zellner_g(x=pred_vars)
+                zellner_g = default_zellner_g(x=x)
 
         self.zellner_g = zellner_g
 
@@ -585,11 +486,11 @@ class BayesianVAR:
         # Fit the model for each endogenous variable, equation by equation.
         posteriors = []
         priors = []
-        self._intercept_index = valid_design_matrix(pred_vars)[-1]
+
         for j in range(num_endog):
             mod = CBLR(
-                response=endog_vars[:, j],
-                predictors=pred_vars,
+                response=endog[:, j],
+                predictors=x,
                 seed=seed
             )
             fit = mod.fit(
@@ -601,7 +502,9 @@ class BayesianVAR:
                 zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index,
                 standardize_data=standardize_data,
+                fit_intercept=self.has_drift
             )
+
             prior = mod.prior
             posteriors.append(fit)
             priors.append(prior)
@@ -618,7 +521,6 @@ class BayesianVAR:
                  ):
 
         first_difference = self.first_difference
-        has_drift = self.has_drift
         num_endog = self.num_endog
         ar_order = self.ar_order
         posterior = self.posterior
@@ -645,7 +547,7 @@ class BayesianVAR:
                 " to the 'exog' argument."
             )
 
-        data = self.prepare_data(
+        _, endog_lag, exog = self.prepare_data(
             endog=np.full(
                 shape=(horizon, num_endog),
                 dtype=np.float64,
@@ -655,24 +557,12 @@ class BayesianVAR:
             for_forecasting=True
         )
 
-        if self.standardize_data:
-            if self._intercept_index is not None:
-                data = np.delete(data, self._intercept_index, axis=1)
-                data = np.insert(data, 0, 1., axis=1)
-                intercept_index = 0
-            else:
-                intercept_index = -1
-        else:
-            if self._intercept_index is not None:
-                intercept_index = self._intercept_index
-            else:
-                intercept_index = -1
-
         y_fcst = var_forecast(
-            data=data,
+            endog_lag=endog_lag,
+            exog=exog,
             ar_order=ar_order,
             first_difference=first_difference,
-            intercept_index=intercept_index,
+            with_drift=self.has_drift,
             posterior=tuple(posterior),
             mean_only=mean_only,
             last_endog=last_endog,

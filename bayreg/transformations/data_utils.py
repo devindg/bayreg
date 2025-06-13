@@ -6,7 +6,11 @@ import pandas as pd
 pd.set_option("display.float_format", lambda x: "%.2f" % x)
 
 
-def fourier_transform(t, p, N):
+def fourier_matrix(
+        time_index,
+        periodicity,
+        num_harmonics
+):
     """
     Creates a Fourier representation of a periodic/oscillating function of time.
     An ordered integer array of values capturing time is mapped to a
@@ -31,20 +35,21 @@ def fourier_transform(t, p, N):
 
     Parameters
     ----------
-    t : array
+    time_index : array
         Sequence of ordered integers representing the evolution of time.
         For example, t = [0,1,2,3,4,5, ..., T], where T is the terminal period.
 
-    p: float
+    periodicity: float
         The amount of time it takes for a period/cycle to end. For example,
         if the frequency of data is monthly, then a period completes in 12
         months. If data is daily, then there could conceivably be two period
         lengths, one for every week (a period of length 7) and one for every
         year (a period of length 365.25). Must be positive.
 
-    N : integer
+    num_harmonics : integer
         The number of cosine-sine pairs to approximate oscillations in the
         variable t.
+
 
     Returns
     -------
@@ -57,13 +62,27 @@ def fourier_transform(t, p, N):
     """
 
     # Create cosine and sine input scalar factors, 2 * pi * n / (p / s), n=1,...,N
-    c = 2 * np.pi * np.arange(1, N + 1) / p
+    c = 2 * np.pi * np.arange(1, num_harmonics + 1) / periodicity
     # Create cosine and sine input values, 2 * pi * n / (p / s) * t, t=1,...,T and n=1,...,N
-    X = c * t[:, np.newaxis]
+    x = c * time_index[:, np.newaxis]
     # Pass X to cos() and sin() functions to create Fourier series
-    F = np.c_[np.cos(X), np.sin(X)]
+    fft_mat = np.c_[np.cos(x), np.sin(x)]
 
-    return F
+    return fft_mat
+
+
+def shift_array(a, shift, fill_value=np.nan):
+    a_shift = np.empty_like(a)
+    if shift > 0:
+        a_shift[:shift] = fill_value
+        a_shift[shift:] = a[:-shift]
+    elif shift < 0:
+        a_shift[shift:] = fill_value
+        a_shift[:shift] = a[-shift:]
+    else:
+        a_shift[:] = a
+
+    return a_shift
 
 
 def forecast_cv_data_split(
