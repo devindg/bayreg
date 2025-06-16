@@ -447,26 +447,34 @@ class BayesianVAR:
                 zellner_g = default_zellner_g(x=x)
 
             pcc = zellner_covariance(
-                x=StandardScaler(with_std=False).fit_transform(x),
+                x=StandardScaler(with_std=standardize_data).fit_transform(x),
                 zellner_g=zellner_g,
                 max_mat_cond_index=max_mat_cond_index
             )
+            if standardize_data:
+                W = np.diag(1 / np.std(x, axis=0))
+            else:
+                W = np.diag(num_pred_vars)
+
             prior_coeff_cov = []
             for k in range(num_endog):
                 if standardize_data:
                     var_y = np.var(endog[:, k])
                 else:
                     var_y = 1.
+
                 zell_g_k = np.ones(num_pred_vars) * zellner_g
                 mask = np.array([False] * num_pred_vars)
                 mask[:num_lag_vars][k::num_endog] = True
                 mask[num_lag_vars:] = True
                 zell_g_k[~mask] = zellner_g * cross_lag_endog_zellner_g_factor
-                prior_coeff_cov.append(
+                prior_coeff_cov.append(W @ (
                         np.diag(zell_g_k ** 0.5)
                         @ (1 / zellner_g * pcc)
-                        @ np.diag(zell_g_k ** 0.5) * var_y
+                        @ np.diag(zell_g_k ** 0.5)
+                        @ W) * var_y
                 )
+
                 if cross_lag_endog_zellner_g_factor < 1:
                     pcm = np.asarray(prior_coeff_mean[k])
                     pcm[~mask] = 0.
