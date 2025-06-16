@@ -3,7 +3,6 @@ from typing import Union
 import numpy as np
 from .linear_regression import ConjugateBayesianLinearRegression as CBLR
 from .linear_regression import (
-    valid_design_matrix,
     default_zellner_g,
     zellner_covariance
 )
@@ -31,7 +30,7 @@ def cumulative_sum(arr):
     return cuml_sum
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def var_forecast(
         endog_lag: np.ndarray,
         exog: np.ndarray,
@@ -60,7 +59,6 @@ def var_forecast(
     )
     for i in prange(num_endog):
         coeffs[i, :] = posterior[i].post_coeff_mean.T
-
 
     if not mean_only:
         num_samp = posterior[0].post_err_var.size
@@ -190,6 +188,7 @@ class BayesianVAR:
         self.num_endog = None
         self.orig_num_obs = None
         self.num_obs = None
+        self.valid_predictors = None
         self.train_data_prepared = False
         self.last_data = None
         self.fit_seed = None
@@ -255,8 +254,6 @@ class BayesianVAR:
                 np.atleast_2d(x)
                 .reshape(num_rows, int(x.size / num_rows))
             )
-            if not for_forecasting:
-                x = valid_design_matrix(x)[0]
         else:
             x = None
 
@@ -273,6 +270,8 @@ class BayesianVAR:
                 fill_value=np.nan
             )
             for p in range(ar_order):
+                if p >= num_rows:
+                    break
                 w = p * num_endog
                 y_lags[p, w:] = last_data[0, :num_lag_vars - w]
 
@@ -331,7 +330,6 @@ class BayesianVAR:
             if for_forecasting:
                 data = np.concatenate((last_data, data), axis=0)
             data = np.diff(data, n=1, axis=0)
-            data = data[:, ~np.all(data == 0, axis=0)]
 
         if not for_forecasting:
             data = data[~np.any(np.isnan(data), axis=1)]
@@ -473,7 +471,7 @@ class BayesianVAR:
                         @ (1 / zellner_g * pcc)
                         @ np.diag(zell_g_k ** 0.5)
                         @ W) * var_y
-                )
+                                       )
 
                 if cross_lag_endog_zellner_g_factor < 1:
                     pcm = np.asarray(prior_coeff_mean[k])
@@ -512,6 +510,8 @@ class BayesianVAR:
                 standardize_data=standardize_data,
                 fit_intercept=self.has_drift
             )
+            if j == 0:
+                self.valid_predictors = mod.valid_predictors
 
             prior = mod.prior
             posteriors.append(fit)
@@ -564,6 +564,14 @@ class BayesianVAR:
             exog=exog,
             for_forecasting=True
         )
+        num_endog_lag = endog_lag.shape[1]
+        num_exog = exog.shape[1]
+
+        # Get valid predictors based on the fitted model
+        endog_lag_index = [j for j in range(num_endog_lag)]
+        exog_index = [j for j in range(num_endog_lag, num_endog_lag + num_exog)]
+        endog_lag = endog_lag[:, list(set(endog_lag_index) & set(self.valid_predictors))]
+        exog = exog[:, [j - num_endog_lag for j in list(set(exog_index) & set(self.valid_predictors))]]
 
         y_fcst = var_forecast(
             endog_lag=endog_lag,
