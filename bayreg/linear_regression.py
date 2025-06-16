@@ -633,7 +633,7 @@ class ConjugateBayesianLinearRegression:
     def fit(
             self,
             num_post_samp: int = 1000,
-            standardize_data: bool = True,
+            standardize_data: bool = False,
             fit_intercept: bool = True,
             prior_coeff_mean: Union[list, tuple, np.ndarray] = None,
             prior_coeff_cov: Union[list, tuple, np.ndarray] = None,
@@ -760,9 +760,9 @@ class ConjugateBayesianLinearRegression:
                     raise ValueError(
                         f"prior_coeff_cov must have shape ({self.num_coeff}, {self.num_coeff})."
                     )
-                if not is_positive_semidefinite(prior_coeff_cov):
+                if not is_positive_semidefinite(prior_coeff_cov / np.linalg.trace(prior_coeff_cov)):
                     raise ValueError(
-                        "prior_coeff_cov must be a positive definite matrix."
+                        "prior_coeff_cov must be a positive semi-definite matrix."
                     )
                 if not is_symmetric(prior_coeff_cov):
                     raise ValueError("prior_coeff_cov must be a symmetric matrix.")
