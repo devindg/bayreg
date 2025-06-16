@@ -454,7 +454,7 @@ class BayesianVAR:
             if standardize_data:
                 W = np.diag(1 / np.std(x, axis=0))
             else:
-                W = np.diag(num_pred_vars)
+                W = np.eye(num_pred_vars)
 
             prior_coeff_cov = []
             for k in range(num_endog):
