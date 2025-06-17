@@ -974,7 +974,7 @@ class ConjugateBayesianLinearRegression:
                 x = np.insert(x, self._intercept_index, 1., axis=1)
 
         self._posterior_exists_check()
-        n = predictors.shape[0]
+        n = x.shape[0]
 
         # Marginal posterior predictive distribution
         post_coeff_mean = self.posterior.post_coeff_mean
