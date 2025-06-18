@@ -456,11 +456,6 @@ class BayesianVAR:
 
             prior_coeff_cov = []
             for k in range(num_endog):
-                if standardize_data:
-                    var_y = np.var(endog[:, k])
-                else:
-                    var_y = 1.
-
                 zell_g_k = np.ones(num_pred_vars) * zellner_g
                 mask = np.array([False] * num_pred_vars)
                 mask[:num_lag_vars][k::num_endog] = True
@@ -470,8 +465,7 @@ class BayesianVAR:
                         np.diag(zell_g_k ** 0.5)
                         @ (1 / zellner_g * pcc)
                         @ np.diag(zell_g_k ** 0.5)
-                        @ W) * var_y
-                                       )
+                        @ W))
 
                 if cross_lag_endog_zellner_g_factor < 1:
                     pcm = np.asarray(prior_coeff_mean[k])
