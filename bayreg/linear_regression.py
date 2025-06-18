@@ -557,7 +557,6 @@ class ConjugateBayesianLinearRegression:
             sd_y, sd_x = data_scales[0], data_scales[1:]
             W = np.diag(sd_x)
             pcc = W @ pcc @ W
-            print(pcc)
 
         pcp = mat_inv(pcc)
 
