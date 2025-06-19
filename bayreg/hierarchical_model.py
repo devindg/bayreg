@@ -84,6 +84,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             dep_var: str,
             predictor_vars: list,
             num_post_samp: int,
+            standardize_data: bool = False,
             prior_coeff_mean: Union[np.ndarray, list, tuple] = None,
             prior_coeff_cov: Union[np.ndarray, list, tuple] = None,
             prior_err_var_shape: Union[int, float] = None,
@@ -104,6 +105,8 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                 prior_err_var_shape=prior_err_var_shape,
                 prior_err_var_scale=prior_err_var_scale,
                 zellner_g=zellner_g,
+                fit_intercept=False,
+                standardize_data=standardize_data,
             )
 
         x = (
@@ -111,7 +114,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             .to_numpy()
             .reshape(-1, len(mod.predictors_names))
         )
-        fit_vals = x @ fit.post_coeff_mean
+        fit_vals = mod.predictors @ fit.post_coeff_mean
 
         if offset_var is not None:
             fit_vals_back_transform = fit_vals + data[[offset_var]].to_numpy()
@@ -323,6 +326,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             self,
             data: PreparedPanelData,
             num_post_samp: int,
+            standardize_data: bool = False,
             prior_coeff_mean: Union[np.ndarray, list, tuple] = None,
             prior_coeff_cov: Union[np.ndarray, list, tuple] = None,
             prior_err_var_shape: Union[int, float] = None,
@@ -369,6 +373,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             dep_var=dep_var,
             predictor_vars=predictor_vars,
             num_post_samp=num_post_samp,
+            standardize_data=standardize_data,
             prior_coeff_mean=prior_coeff_mean,
             prior_coeff_cov=prior_coeff_cov,
             prior_err_var_shape=prior_err_var_shape,
@@ -384,6 +389,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             self,
             data: Union[PreparedPanelData, list],
             num_post_samp: int,
+            standardize_data: bool = False,
             prior_coeff_mean: list = None,
             prior_coeff_cov: list = None,
             prior_err_var_shape: list = None,
@@ -473,6 +479,7 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
                     repeat(dep_var),
                     pred_vars_m,
                     repeat(num_post_samp),
+                    repeat(standardize_data),
                     prior_coeff_mean,
                     prior_coeff_cov,
                     prior_err_var_shape,
@@ -496,17 +503,12 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
             self,
             data: Union[pd.DataFrame, PreparedPanelData],
             group_fit_results: FitResults,
+            standardize_data: bool = False,
             member_num_post_samp: int = 500,
-            group_post_cov_shrink_factor: Union[int, float] = 1.0,
     ) -> FitResults:
         if not isinstance(data, (pd.DataFrame, PreparedPanelData)):
             raise TypeError(
                 "data must be a Pandas Dataframe or a PreparedPanelData object."
-            )
-
-        if group_post_cov_shrink_factor <= 0:
-            raise ValueError(
-                "group_posterior_shrink_factor must be a positive number."
             )
 
         if isinstance(data, pd.DataFrame):
@@ -529,7 +531,9 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         # Retrieve the group-level, coefficient posterior mean and covariance matrix
         grp_fit = group_fit_results.fit
         grp_post_coeff_mean = grp_fit.post_coeff_mean
+        grp_post_coeff_cov = grp_fit.post_coeff_cov
         grp_rsq = group_fit_results.r_sqr
+        num_group_obs = data.num_obs
 
         """
         Get shrinkage factors for each member in the group.
@@ -559,11 +563,11 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
         mem_ids = [j[0] for j in data.member_dfs]
         dfs = [j[1].copy() for j in data.member_dfs]
         mem_prior_coeff_mean = []
-        mem_zellner_g = []
+        mem_prior_coeff_cov = []
         new_dfs = []
         for k, df_m in enumerate(dfs):
             x_m = df_m.loc[:, pred_vars]
-            x_m, valid_cols = valid_design_matrix(x_m.to_numpy())
+            x_m, valid_cols, _ = valid_design_matrix(x_m.to_numpy())
             n_m, k_m = x_m.shape
 
             if len(valid_cols) == num_pred_vars:
@@ -581,26 +585,31 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
             if k_m != num_pred_vars:
                 coeff_m = grp_post_coeff_mean[valid_cols, :]
+                cov_m = grp_post_coeff_cov[np.ix_(valid_cols, valid_cols)]
             else:
                 coeff_m = grp_post_coeff_mean
+                cov_m = grp_post_coeff_cov
 
-            zellner_g_m = (
-                    group_post_cov_shrink_factor
-                    * max(n_m, k_m ** 2)
-                    * grp_rsq / (1 - grp_rsq)
+            cov_m = (
+                    cov_m
+                    * 1 / num_group_obs
+                    * n_m / k_m ** 2
+                    * (1 - grp_rsq) / grp_rsq
             )
-            mem_zellner_g.append(zellner_g_m)
+
             mem_prior_coeff_mean.append(coeff_m)
+            mem_prior_coeff_cov.append(cov_m)
 
         new_data = list(zip(mem_ids, new_dfs))
         hierarchical_mem_res = self.member_fit(
             data=new_data,
             num_post_samp=member_num_post_samp,
+            standardize_data=standardize_data,
             prior_coeff_mean=mem_prior_coeff_mean,
-            prior_coeff_cov=None,
+            prior_coeff_cov=mem_prior_coeff_cov,
             prior_err_var_shape=None,
             prior_err_var_scale=None,
-            zellner_g=mem_zellner_g,
+            zellner_g=None,
         )
 
         return hierarchical_mem_res
