@@ -987,20 +987,20 @@ class ConjugateBayesianLinearRegression:
                 / post_err_var_shape
                 * (1 + np.array([z.T @ ninvg_post_coeff_cov @ z for z in x]))
         )
-        response_mean = x @ post_coeff_mean
+        post_mean = x @ post_coeff_mean
 
         if not mean_only:
-            posterior_prediction = t.rvs(
+            post = t.rvs(
                 df=2 * post_err_var_shape,
-                loc=response_mean.flatten(),
+                loc=post_mean.flatten(),
                 scale=V ** 0.5,
                 size=(self.posterior.num_post_samp, n),
                 random_state=self.seed,
             )
         else:
-            posterior_prediction = response_mean
+            post = None
 
-        return posterior_prediction
+        return post, post_mean
 
     def posterior_predictive_distribution(self):
         self._posterior_exists_check()
