@@ -110,7 +110,7 @@ def zellner_covariance(
 
         xtx = x[:, variable_cols].T @ x[:, variable_cols]
         prior_coeff_cov = mat_inv(
-                1 / zellner_g * (w * xtx + (1 - w) * np.diag(np.diag(xtx)))
+            1 / zellner_g * (w * xtx + (1 - w) * np.diag(np.diag(xtx)))
         )
 
         # If a constant is present, insert an approximately flat
@@ -134,7 +134,7 @@ def zellner_covariance(
 
     else:
         prior_coeff_cov = mat_inv(
-                1 / zellner_g * x.T @ x
+            1 / zellner_g * x.T @ x
         )
 
     return prior_coeff_cov
@@ -236,6 +236,7 @@ class ConjugateBayesianLinearRegression:
         self.data_transformer = None
         self._back_transform_means = None
         self._back_transform_sds = None
+        self._intercept_name = '__INTERCEPT__'
 
         # Define new index for intercept if intercept is present
         self._intercept_index = 0
@@ -459,7 +460,7 @@ class ConjugateBayesianLinearRegression:
         self.data_transformer = ss
         y, x = data[:, 0:1], data[:, 1:]
 
-        # Capture means and standard deviations for back-transoformations
+        # Capture means and standard deviations for back-transformations
         self._back_transform_params()
 
         return y, x
@@ -716,13 +717,13 @@ class ConjugateBayesianLinearRegression:
                 if prior_coeff_mean.ndim not in (1, 2):
                     raise ValueError("prior_coeff_mean must have dimension 1 or 2.")
                 elif prior_coeff_mean.ndim == 1:
-                    prior_coeff_mean = prior_coeff_mean.reshape(self.num_coeff, 1)
+                    prior_coeff_mean = prior_coeff_mean.reshape(k, 1)
                 else:
                     pass
 
-                if not prior_coeff_mean.shape == (self.num_coeff, 1):
+                if not prior_coeff_mean.shape == (k, 1):
                     raise ValueError(
-                        f"prior_coeff_mean must have shape ({self.num_coeff}, 1)."
+                        f"prior_coeff_mean must have shape ({k}, 1)."
                     )
                 if np.any(np.isnan(prior_coeff_mean)):
                     raise ValueError("prior_coeff_mean cannot have NaN values.")
@@ -731,7 +732,7 @@ class ConjugateBayesianLinearRegression:
                         "prior_coeff_mean cannot have Inf and/or -Inf values."
                     )
         else:
-            prior_coeff_mean = np.zeros((self.num_coeff, 1))
+            prior_coeff_mean = np.zeros((k, 1))
 
         # Check prior covariance matrix for regression coefficients
         if prior_coeff_cov is not None:
@@ -756,13 +757,13 @@ class ConjugateBayesianLinearRegression:
 
                 if prior_coeff_cov.ndim != 2:
                     raise ValueError("prior_coeff_cov must have dimension 2.")
-                if not prior_coeff_cov.shape == (self.num_coeff, self.num_coeff):
+                if not prior_coeff_cov.shape == (k, k):
                     raise ValueError(
-                        f"prior_coeff_cov must have shape ({self.num_coeff}, {self.num_coeff})."
+                        f"prior_coeff_cov must have shape ({k}, {k})."
                     )
-                if not is_positive_semidefinite(prior_coeff_cov / np.linalg.trace(prior_coeff_cov)):
+                if not is_positive_semidefinite(prior_coeff_cov):
                     raise ValueError(
-                        "prior_coeff_cov must be a positive semi-definite matrix."
+                        "prior_coeff_cov must be a positive definite matrix."
                     )
                 if not is_symmetric(prior_coeff_cov):
                     raise ValueError("prior_coeff_cov must be a symmetric matrix.")
@@ -897,7 +898,7 @@ class ConjugateBayesianLinearRegression:
             post_err_var_scale,
             post_err_var,
             ninvg_post_coeff_cov
-         ) = self._back_transform_posterior(
+        ) = self._back_transform_posterior(
             post_coeff_mean=post_coeff_mean,
             post_coeff_cov=post_coeff_cov,
             post_coeff=post_coeff,
@@ -917,6 +918,12 @@ class ConjugateBayesianLinearRegression:
             post_err_var_scale=post_err_var_scale,
             post_err_var=post_err_var,
         )
+
+        if fit_intercept:
+            self.predictors_names = [self._intercept_name] + self.predictors_names
+
+        if not self.has_intercept and fit_intercept:
+            self.num_coeff += 1
 
         return self.posterior
 
