@@ -105,6 +105,8 @@ def zellner_covariance(
         else:
             det_sign, log_det = np.linalg.slogdet(xtx)
             avg_determ = (det_sign * np.exp(log_det)) ** (1 / k_z)
+            if not np.isfinite(avg_determ):
+                avg_determ = 0.
             avg_trace = np.trace(xtx) / k_z
             w = avg_determ / avg_trace
 
