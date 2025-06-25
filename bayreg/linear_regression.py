@@ -263,7 +263,7 @@ class ConjugateBayesianLinearRegression:
         if self.post_pred_dist is None:
             raise AttributeError(
                 "No posterior predictive distribution was found. "
-                "TThe fit() and posterior_predictive_distribution() methods "
+                "The fit() and posterior_predictive_distribution() methods "
                 "must be called."
             )
 
@@ -1013,7 +1013,7 @@ class ConjugateBayesianLinearRegression:
 
     def posterior_predictive_distribution(self):
         self._posterior_exists_check()
-        self.post_pred_dist = self.predict()
+        self.post_pred_dist = self.predict()[0]
 
         return self.post_pred_dist
 
