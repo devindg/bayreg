@@ -578,6 +578,7 @@ class ConjugateBayesianLinearRegression:
 
     def _back_transform_posterior(
             self,
+            predictors: np.ndarray,
             post_coeff_mean,
             post_coeff_cov,
             post_coeff,
@@ -586,7 +587,6 @@ class ConjugateBayesianLinearRegression:
             post_err_var,
             ninvg_post_coeff_cov
     ):
-        x = self.predictors
 
         if self.standardize_data:
             scales = self._back_transform_sds
@@ -597,9 +597,12 @@ class ConjugateBayesianLinearRegression:
             post_coeff = (post_coeff @ W) * sd_y
             post_err_var_scale = post_err_var_scale * sd_y ** 2
             post_err_var = post_err_var * sd_y ** 2
-            ninvg_post_coeff_cov = (W @ ninvg_post_coeff_cov @ W) * sd_y ** 2
+            ninvg_post_coeff_cov = W @ ninvg_post_coeff_cov @ W
 
         if self.fit_intercept:
+            x = predictors.copy()
+            x = np.insert(x, self._intercept_index, 1., axis=1)
+
             means = self._back_transform_means
             m_y, m_x = means[0], means[1:]
             post_intercept_mean = (
@@ -901,6 +904,7 @@ class ConjugateBayesianLinearRegression:
             post_err_var,
             ninvg_post_coeff_cov
         ) = self._back_transform_posterior(
+            predictors=x,
             post_coeff_mean=post_coeff_mean,
             post_coeff_cov=post_coeff_cov,
             post_coeff=post_coeff,
