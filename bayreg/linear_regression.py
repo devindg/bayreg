@@ -980,11 +980,11 @@ class ConjugateBayesianLinearRegression:
                     )
                 x = x[:, self.valid_predictors]
 
-        if self.has_intercept:
-            x = np.delete(x, self.intercept_index, axis=1)
+            if self.has_intercept:
+                x = np.delete(x, self.intercept_index, axis=1)
 
-        if self.fit_intercept:
-            x = np.insert(x, self._intercept_index, 1., axis=1)
+            if self.fit_intercept:
+                x = np.insert(x, self._intercept_index, 1., axis=1)
 
         self._posterior_exists_check()
         n = x.shape[0]
