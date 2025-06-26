@@ -587,11 +587,13 @@ class ConjugateBayesianLinearRegression:
             post_err_var,
             ninvg_post_coeff_cov
     ):
+        x = predictors.copy()
 
         if self.standardize_data:
             scales = self._back_transform_sds
             sd_y, sd_x = scales[0], scales[1:]
             W = np.diag(1 / sd_x)
+            x = x @ mat_inv(W)
             post_coeff_mean = (W @ post_coeff_mean) * sd_y
             post_coeff_cov = (W @ post_coeff_cov @ W) * sd_y ** 2
             post_coeff = (post_coeff @ W) * sd_y
@@ -600,9 +602,7 @@ class ConjugateBayesianLinearRegression:
             ninvg_post_coeff_cov = W @ ninvg_post_coeff_cov @ W
 
         if self.fit_intercept:
-            x = predictors.copy()
             x = np.insert(x, self._intercept_index, 1., axis=1)
-
             means = self._back_transform_means
             m_y, m_x = means[0], means[1:]
             post_intercept_mean = (
