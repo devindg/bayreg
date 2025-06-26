@@ -524,25 +524,24 @@ class ConjugateBayesianLinearRegression:
             is_custom
     ):
         pcc = prior_coeff_cov.copy()
+        var_y = np.var(self.response)
+        sd_x = self._back_transform_sds[1:]
 
-        if self.has_intercept:
-            # Standardizing or centering reparameterizes the intercept.
-            # Effectively, the implied intercept turns into a
-            # parameter with a vague prior. This will be enforced
-            # with a zero-mean and high variance.
-
-            if is_custom:
-                # Delete row and column associated with intercept index
+        if is_custom:
+            max_pcc_diag = np.max(np.diag(pcc))
+            if self.has_intercept:
                 pcc = np.delete(pcc, self.intercept_index, axis=0)
                 pcc = np.delete(pcc, self.intercept_index, axis=1)
+        else:
+            W = np.diag(1 / sd_x)
+            pcc = W @ pcc @ W
+            max_pcc_diag = np.max(np.diag(pcc))
 
         if self.fit_intercept:
             pcc = np.insert(pcc, self._intercept_index, 0, axis=0)
             pcc = np.insert(pcc, self._intercept_index, 0, axis=1)
 
             # Define prior variance for intercept
-            var_y = np.var(self.response)
-            max_pcc_diag = np.max(np.diag(pcc))
             if var_y < max_pcc_diag:
                 intercept_var = max_pcc_diag * 1e4
             else:
@@ -555,9 +554,11 @@ class ConjugateBayesianLinearRegression:
             pcc = np.delete(pcc, self._intercept_index, axis=0)
             pcc = np.delete(pcc, self._intercept_index, axis=1)
 
-        if self.standardize_data and is_custom:
-            data_scales = self.data_transformer.scale_
-            sd_y, sd_x = data_scales[0], data_scales[1:]
+        if is_custom:
+            if self.standardize_data:
+                W = np.diag(sd_x)
+                pcc = W @ pcc @ W
+        else:
             W = np.diag(sd_x)
             pcc = W @ pcc @ W
 
