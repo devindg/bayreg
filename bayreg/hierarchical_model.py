@@ -191,7 +191,8 @@ class BayesianPanelRegression(ProcessPanelRegressionData):
 
         b = fit.fit.post_coeff_mean
         if fit.fit_intercept:
-            x = np.c_[np.ones(data.shape[0]), data[fit.pred_vars[1:]]]
+            x = data[fit.pred_vars[1:]]
+            x.insert(loc=0, column='CONST', value=[1.] * len(x))
         else:
             x = data[fit.pred_vars]
         coeff_map = dict(zip(fit.pred_vars, b.flatten()))
