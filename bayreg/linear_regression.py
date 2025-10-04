@@ -3,9 +3,9 @@ from typing import NamedTuple, Union
 import numpy as np
 import pandas as pd
 from scipy.stats import invgamma, t
-from bayreg.linear_algebra.array_checks import is_positive_semidefinite, is_symmetric
-from bayreg.linear_algebra.array_operations import mat_inv, svd
-from bayreg.model_assessment.performance import (
+from ..bayreg.linear_algebra.array_checks import is_positive_semidefinite, is_symmetric
+from ..bayreg.linear_algebra.array_operations import mat_inv, svd
+from ..bayreg.model_assessment.performance import (
     oos_error,
     mean_squared_prediction_error,
     r_squared,
@@ -535,6 +535,7 @@ class ConjugateBayesianLinearRegression:
         else:
             W = np.diag(1 / sd_x)
             pcc = W @ pcc @ W
+            self.prior = self.prior._replace(prior_coeff_cov=pcc)
             max_pcc_diag = np.max(np.diag(pcc))
 
         if self.fit_intercept:
@@ -579,7 +580,6 @@ class ConjugateBayesianLinearRegression:
 
     def _back_transform_posterior(
             self,
-            predictors: np.ndarray,
             post_coeff_mean,
             post_coeff_cov,
             post_coeff,
@@ -588,13 +588,11 @@ class ConjugateBayesianLinearRegression:
             post_err_var,
             ninvg_post_coeff_cov
     ):
-        x = predictors.copy()
 
         if self.standardize_data:
             scales = self._back_transform_sds
             sd_y, sd_x = scales[0], scales[1:]
             W = np.diag(1 / sd_x)
-            x = x @ mat_inv(W)
             post_coeff_mean = (W @ post_coeff_mean) * sd_y
             post_coeff_cov = (W @ post_coeff_cov @ W) * sd_y ** 2
             post_coeff = (post_coeff @ W) * sd_y
@@ -603,7 +601,6 @@ class ConjugateBayesianLinearRegression:
             ninvg_post_coeff_cov = W @ ninvg_post_coeff_cov @ W
 
         if self.fit_intercept:
-            x = np.insert(x, self._intercept_index, 1., axis=1)
             means = self._back_transform_means
             m_y, m_x = means[0], means[1:]
             post_intercept_mean = (
@@ -624,8 +621,23 @@ class ConjugateBayesianLinearRegression:
                 post_intercept,
                 axis=1
             )
-            prior_coeff_prec = mat_inv(self.prior.prior_coeff_cov)
-            ninvg_post_coeff_cov = mat_inv(x.T @ x + prior_coeff_prec)
+            prior_intercept_var = (
+                self.prior
+                .prior_coeff_cov[self._intercept_index, self._intercept_index]
+            )
+            ninvg_post_coeff_cov = np.insert(
+                ninvg_post_coeff_cov,
+                self._intercept_index,
+                0.,
+                axis=0)
+            ninvg_post_coeff_cov = np.insert(
+                ninvg_post_coeff_cov,
+                self._intercept_index,
+                0.,
+                axis=1)
+            (
+                ninvg_post_coeff_cov[self._intercept_index, self._intercept_index]
+            ) = prior_intercept_var
             post_coeff_cov = post_err_var_scale / post_err_var_shape * ninvg_post_coeff_cov
 
         return (
@@ -905,7 +917,6 @@ class ConjugateBayesianLinearRegression:
             post_err_var,
             ninvg_post_coeff_cov
         ) = self._back_transform_posterior(
-            predictors=x,
             post_coeff_mean=post_coeff_mean,
             post_coeff_cov=post_coeff_cov,
             post_coeff=post_coeff,
