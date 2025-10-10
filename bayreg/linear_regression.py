@@ -544,9 +544,9 @@ class ConjugateBayesianLinearRegression:
 
             # Define prior variance for intercept
             if var_y < max_pcc_diag:
-                intercept_var = max_pcc_diag * 1e4
+                intercept_var = max_pcc_diag * 100
             else:
-                intercept_var = np.min([var_y, max_pcc_diag * 1e4])
+                intercept_var = np.min([var_y, max_pcc_diag * 100])
 
             pcc[self._intercept_index, self._intercept_index] = intercept_var
             self.prior = self.prior._replace(prior_coeff_cov=pcc)
@@ -1003,25 +1003,20 @@ class ConjugateBayesianLinearRegression:
 
         # Marginal posterior predictive distribution
         post_coeff_mean = self.posterior.post_coeff_mean
-        post_err_var_shape = self.posterior.post_err_var_shape
-        post_err_var_scale = self.posterior.post_err_var_scale
-        ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
-
-        V = (
-                post_err_var_scale
-                / post_err_var_shape
-                * (1 + np.array([z.T @ ninvg_post_coeff_cov @ z for z in x]))
-        )
+        post_coeff = self.posterior.post_coeff
+        post_err_var = self.posterior.post_err_var
         post_mean = x @ post_coeff_mean
 
         if not mean_only:
-            post = t.rvs(
-                df=2 * post_err_var_shape,
-                loc=post_mean.flatten(),
-                scale=V ** 0.5,
-                size=(self.posterior.num_post_samp, n),
-                random_state=self.seed,
-            )
+            rng = np.random.default_rng(self.seed)
+            post = np.empty((self.posterior.num_post_samp, n))
+            for i in range(self.posterior.num_post_samp):
+                post[i, :] = (
+                    rng
+                    .normal(
+                        x @ post_coeff[i, :],
+                        post_err_var[i] ** 0.5)
+                )
         else:
             post = None
 
