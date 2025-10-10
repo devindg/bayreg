@@ -3,9 +3,9 @@ from typing import NamedTuple, Union
 import numpy as np
 import pandas as pd
 from scipy.stats import invgamma, t
-from ..bayreg.linear_algebra.array_checks import is_positive_semidefinite, is_symmetric
-from ..bayreg.linear_algebra.array_operations import mat_inv, svd
-from ..bayreg.model_assessment.performance import (
+from .linear_algebra.array_checks import is_positive_semidefinite, is_symmetric
+from .linear_algebra.array_operations import mat_inv, svd
+from .model_assessment.performance import (
     oos_error,
     mean_squared_prediction_error,
     r_squared,
