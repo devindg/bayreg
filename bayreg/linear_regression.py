@@ -992,33 +992,51 @@ class ConjugateBayesianLinearRegression:
                     )
                 x = x[:, self.valid_predictors]
 
-            if self.has_intercept:
-                x = np.delete(x, self.intercept_index, axis=1)
+                if self.has_intercept:
+                    x = np.delete(x, self.intercept_index, axis=1)
+
+            self._posterior_exists_check()
+            n = x.shape[0]
+
+            # Marginal posterior predictive distribution
+            post_coeff_mean = self.posterior.post_coeff_mean
+            post_err_var_shape = self.posterior.post_err_var_shape
+            post_err_var_scale = self.posterior.post_err_var_scale
+            ninvg_post_coeff_cov = self.posterior.ninvg_post_coeff_cov
 
             if self.fit_intercept:
-                x = np.insert(x, self._intercept_index, 1., axis=1)
-
-        self._posterior_exists_check()
-        n = x.shape[0]
-
-        # Marginal posterior predictive distribution
-        post_coeff_mean = self.posterior.post_coeff_mean
-        post_coeff = self.posterior.post_coeff
-        post_err_var = self.posterior.post_err_var
-        post_mean = x @ post_coeff_mean
-
-        if not mean_only:
-            rng = np.random.default_rng(self.seed)
-            post = np.empty((self.posterior.num_post_samp, n))
-            for i in range(self.posterior.num_post_samp):
-                post[i, :] = (
-                    rng
-                    .normal(
-                        x @ post_coeff[i, :],
-                        post_err_var[i] ** 0.5)
+                ninvg_post_coeff_cov = np.delete(
+                    ninvg_post_coeff_cov,
+                    self._intercept_index,
+                    axis=0
                 )
-        else:
-            post = None
+                ninvg_post_coeff_cov = np.delete(
+                    ninvg_post_coeff_cov,
+                    self._intercept_index,
+                    axis=1
+                )
+
+            V = (
+                    post_err_var_scale
+                    / post_err_var_shape
+                    * (1 + np.array([z.T @ ninvg_post_coeff_cov @ z for z in x]))
+            )
+
+            if self.fit_intercept:
+                x = np.insert(x, self._intercept_index, 1.0, axis=1)
+
+            post_mean = x @ post_coeff_mean
+
+            if not mean_only:
+                post = t.rvs(
+                    df=2 * post_err_var_shape,
+                    loc=post_mean.flatten(),
+                    scale=V ** 0.5,
+                    size=(self.posterior.num_post_samp, n),
+                    random_state=self.seed,
+                )
+            else:
+                post = None
 
         return post, post_mean
 
