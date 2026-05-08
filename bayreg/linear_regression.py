@@ -23,9 +23,6 @@ def valid_design_matrix(
     num_obs, num_pred = x.shape
     cols = [j for j in range(num_pred)]
 
-    # Initialize valid columns
-    valid_cols = cols
-
     # Identify intercept, if any
     all_ones = np.all(x == 1, axis=0)
     if np.any(all_ones):
@@ -33,14 +30,10 @@ def valid_design_matrix(
 
         if len(intercept_index) > 1:
             redundant_intercept = intercept_index[1:]
-            print(f"Columns with indexes {redundant_intercept} are redundant "
-                  f"intercepts and will be ignored"
-                  )
-        else:
-            redundant_intercept = []
+            warnings.warn(
+                f"Columns with indexes {redundant_intercept} are redundant intercepts."
+            )
 
-        intercept_index = intercept_index[0]  # First index with an intercept
-        valid_cols = [j for j in valid_cols if j not in redundant_intercept]
     else:
         intercept_index = None
 
@@ -48,28 +41,26 @@ def valid_design_matrix(
     _, non_redundant_cols = np.unique(x, axis=1, return_index=True)
     if len(cols) != len(non_redundant_cols):
         redundant_cols = [j for j in cols if j not in non_redundant_cols]
-        print(f"Columns with indexes {redundant_cols} are redundant and will be ignored.")
-        valid_cols = [j for j in valid_cols if j not in redundant_cols]
+        warnings.warn(f"Columns with indexes {redundant_cols} are redundant.")
 
     # Identify constant columns, if any
     const_cols = np.where(np.std(x, axis=0) <= const_tol)[0]
     if len(const_cols) > 0:
         if intercept_index is None:
-            print(f"Columns with indexes {const_cols} are non-intercept constants and will be ignored.")
-            valid_cols = [j for j in valid_cols if j not in const_cols]
+            warnings.warn(
+                f"Columns with indexes {const_cols} are non-intercept constants."
+            )
         else:
             non_intercept_const_cols = [j for j in const_cols if j != intercept_index]
 
             if len(non_intercept_const_cols) > 0:
-                print(f"Columns with indexes {non_intercept_const_cols} are "
-                      f"non-intercept constants and will be ignored."
-                      )
+                warnings.warn(
+                    f"Columns with indexes {non_intercept_const_cols} are non-intercept constants."
+                )
 
-            valid_cols = [j for j in valid_cols if j not in non_intercept_const_cols]
+    x = x[:, cols]
 
-    x = x[:, valid_cols]
-
-    return x, valid_cols, intercept_index
+    return x, cols, intercept_index
 
 
 def default_zellner_g(x: np.ndarray) -> float:
@@ -81,18 +72,13 @@ def default_zellner_g(x: np.ndarray) -> float:
 def zellner_covariance(
         x: np.ndarray,
         zellner_g: float,
-        max_mat_cond_index: float
+        max_mat_cond_index: float,
 ) -> np.ndarray:
     num_coeff = x.shape[1]
     if num_coeff > 1:
         ss = StandardScaler()
         x_z = ss.fit_transform(x)
         variable_cols = ~np.all(x_z == 0, axis=0)
-
-        if np.sum(~variable_cols) > 1:
-            raise AssertionError(
-                "The design matrix cannot have more than one constant."
-            )
 
         xtx = (x_z.T @ x_z)[np.ix_(variable_cols, variable_cols)]
         k_z = x_z.shape[1]
@@ -110,29 +96,10 @@ def zellner_covariance(
             avg_trace = np.trace(xtx) / k_z
             w = avg_determ / avg_trace
 
-        xtx = x[:, variable_cols].T @ x[:, variable_cols]
+        xtx = x.T @ x
         prior_coeff_cov = mat_inv(
             1 / zellner_g * (w * xtx + (1 - w) * np.diag(np.diag(xtx)))
         )
-
-        # If a constant is present, insert an approximately flat
-        # prior for the intercept.
-        if np.sum(~variable_cols) == 1:
-            max_diag = np.max(np.diag(prior_coeff_cov))
-            prior_coeff_cov = np.insert(
-                prior_coeff_cov,
-                ~variable_cols,
-                0,
-                axis=0
-            )
-            prior_coeff_cov = np.insert(
-                prior_coeff_cov,
-                ~variable_cols,
-                0,
-                axis=1
-            )
-            intercept_var = np.min([1e4, max_diag * 1e4])
-            prior_coeff_cov[~variable_cols, ~variable_cols] = intercept_var
 
     else:
         prior_coeff_cov = mat_inv(
@@ -820,7 +787,7 @@ class ConjugateBayesianLinearRegression:
             prior_coeff_cov = zellner_covariance(
                 x=x,
                 zellner_g=zellner_g,
-                max_mat_cond_index=max_mat_cond_index
+                max_mat_cond_index=max_mat_cond_index,
             )
 
         self.prior = Prior(

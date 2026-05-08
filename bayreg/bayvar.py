@@ -299,9 +299,6 @@ class BayesianVAR:
                         num_harmonics=h
                     )
 
-                    if periodicity % 2 == 0 and 2 * h == periodicity:
-                        ft = ft[:, :-1]
-
                     self.num_seasonal_harmonics = h
                     time_polynomial.append(ft)
 
@@ -465,7 +462,8 @@ class BayesianVAR:
                         np.diag(zell_g_k ** 0.5)
                         @ (1 / zellner_g * pcc)
                         @ np.diag(zell_g_k ** 0.5)
-                        @ W))
+                        @ W)
+                )
 
                 if cross_lag_endog_zellner_g_factor < 1:
                     pcm = np.asarray(prior_coeff_mean[k])
@@ -561,7 +559,7 @@ class BayesianVAR:
         num_endog_lag = endog_lag.shape[1]
         num_exog = exog.shape[1]
 
-        # Get valid predictors based on the fitted model
+        # Get valid predictors based on fitted model
         endog_lag_index = [j for j in range(num_endog_lag)]
         exog_index = [j for j in range(num_endog_lag, num_endog_lag + num_exog)]
         endog_lag = endog_lag[:, list(set(endog_lag_index) & set(self.valid_predictors))]
