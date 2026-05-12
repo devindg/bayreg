@@ -299,6 +299,9 @@ class BayesianVAR:
                         num_harmonics=h
                     )
 
+                    if periodicity % 2 == 0 and 2 * h == periodicity:
+                        ft = ft[:, :-1]
+
                     self.num_seasonal_harmonics = h
                     time_polynomial.append(ft)
 
